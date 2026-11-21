@@ -24,7 +24,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
       # ============================================================
       # 2. JAVA 17
       # ============================================================
@@ -33,7 +32,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
 
       # ============================================================
       # 3. INSTALL GRADLE 8.7
@@ -53,7 +51,6 @@ jobs:
 
           echo "Gradle 8.7 installed."
 
-
       # ============================================================
       # 4. ANDROID SDK
       # ============================================================
@@ -63,7 +60,6 @@ jobs:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
-
 
       # ============================================================
       # 5. VERIFY ANDROID SDK
@@ -86,10 +82,9 @@ jobs:
 
           echo "Android SDK verified: $SDK"
 
-
       # ============================================================
-      # 6. LOCATE AND EXTRACT THE A227C ZIP
-      # IMPORTANT: ALWAYS BUILD FROM THE EXTRACTED ZIP
+      # 6. LOCATE AND EXTRACT A227C SOURCE ZIP
+      # ALWAYS BUILD FROM THE SELECTED EXTRACTED ARCHIVE
       # ============================================================
       - name: Extract and select repaired A227C project
         shell: bash
@@ -114,17 +109,20 @@ jobs:
                 -name 'UNIVERSAL-TRADING-BOT-A227C-FINAL-BUILD.zip' \
                 -o \
                 -name 'UNIVERSAL-TRADING-BOT-A227C-READY-TO-UPLOAD.zip' \
+                -o \
+                -name 'UNIVERSAL-TRADING-BOT-A227C-READY-TO-UPLOAD-RESOURCE-FIX.zip' \
               \) \
               -print | sort
           )
 
           if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
-            echo "ERROR: No A227C source ZIP found."
-            echo "Upload the repaired A227C ZIP into the repository."
+            echo "ERROR: No recognized A227C source ZIP found."
+            echo "Expected one of the supported A227C archive filenames."
 
             find "$WORKSPACE" \
               -maxdepth 5 \
               -type f \
+              -not -path '*/.git/*' \
               -print
 
             exit 1
@@ -133,7 +131,7 @@ jobs:
           if [ "${#ZIP_FILES[@]}" -gt 1 ]; then
             echo "ERROR: Multiple A227C ZIP archives found."
             printf '%s\n' "${ZIP_FILES[@]}"
-            echo "Keep only one authoritative A227C archive."
+            echo "Keep only ONE authoritative A227C source ZIP."
             exit 1
           fi
 
@@ -152,7 +150,7 @@ jobs:
           echo "Extracting A227C source..."
           unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
 
-          echo "Searching ONLY inside the extracted archive..."
+          echo "Searching inside extracted archive..."
 
           PROJECT_DIR=""
 
@@ -197,9 +195,8 @@ jobs:
 
           echo "BUILD_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-
       # ============================================================
-      # 7. VERIFY ROOT KOTLIN GRADLE SETTINGS
+      # 7. VERIFY ROOT GRADLE SETTINGS
       # ============================================================
       - name: Verify A227C Gradle configuration
         shell: bash
@@ -208,10 +205,8 @@ jobs:
 
           cd "$BUILD_DIR"
 
-          SETTINGS="settings.gradle.kts"
-
-          if [ ! -f "$SETTINGS" ]; then
-            echo "ERROR: Kotlin settings.gradle.kts missing."
+          if [ ! -f settings.gradle.kts ]; then
+            echo "ERROR: settings.gradle.kts missing."
             exit 1
           fi
 
@@ -229,35 +224,57 @@ jobs:
 
           if ! grep -Fq \
             'rootProject.name = "UNIVERSAL-TRADING-BOT-A227C"' \
-            "$SETTINGS"; then
+            settings.gradle.kts; then
 
-            echo "ERROR: Kotlin project name configuration is incorrect."
-            cat "$SETTINGS"
+            echo "ERROR: Incorrect Kotlin project name."
+            cat settings.gradle.kts
             exit 1
-
           fi
 
           if ! grep -Fq \
             'include(":android:app")' \
-            "$SETTINGS"; then
+            settings.gradle.kts; then
 
-            echo "ERROR: Android module include declaration is incorrect."
-            cat "$SETTINGS"
+            echo "ERROR: Android module include declaration missing."
+            cat settings.gradle.kts
             exit 1
-
           fi
 
-          echo "Root Gradle settings:"
-          cat "$SETTINGS"
+          echo "Root Gradle settings verified."
+          cat settings.gradle.kts
 
-          echo "Android module:"
+          echo "Android module verified."
           ls -la android/app
 
-          echo "SUCCESS: A227C Gradle structure verified."
+      # ============================================================
+      # 8. VERIFY ANDROIDX CONFIGURATION
+      # ============================================================
+      - name: Verify AndroidX configuration
+        shell: bash
+        run: |
+          set -euo pipefail
 
+          cd "$BUILD_DIR"
+
+          if [ ! -f gradle.properties ]; then
+            echo "ERROR: Root gradle.properties missing."
+            exit 1
+          fi
+
+          if ! grep -Eq \
+            '^[[:space:]]*android\.useAndroidX[[:space:]]*=[[:space:]]*true[[:space:]]*$' \
+            gradle.properties; then
+
+            echo "ERROR: android.useAndroidX=true is missing."
+            cat gradle.properties
+            exit 1
+          fi
+
+          echo "AndroidX configuration verified."
+          cat gradle.properties
 
       # ============================================================
-      # 8. VERIFY ANDROID MANIFEST AND SOURCE
+      # 9. VERIFY ANDROID MANIFEST AND SOURCE
       # ============================================================
       - name: Verify Android source files
         shell: bash
@@ -288,9 +305,8 @@ jobs:
             \( -name '*.kt' -o -name '*.java' \) \
             -print
 
-
       # ============================================================
-      # 9. VERIFY OFFICIAL A227C LOGO
+      # 10. VERIFY OFFICIAL A227C LOGO
       # ============================================================
       - name: Verify official A227C logo
         shell: bash
@@ -314,21 +330,17 @@ jobs:
           echo "Official A227C logo verified."
           ls -lh "$LOGO"
 
-
       # ============================================================
-      # 10. VERIFY GRADLE 8.7
+      # 11. VERIFY GRADLE 8.7
       # ============================================================
       - name: Verify Gradle 8.7
         shell: bash
         run: |
           set -euo pipefail
-
           gradle --version
 
-
       # ============================================================
-      # 11. CLEAN PROJECT
-      # RUN FROM ROOT GRADLE PROJECT
+      # 12. CLEAN PROJECT
       # ============================================================
       - name: Clean A227C Android project
         shell: bash
@@ -342,9 +354,8 @@ jobs:
             :android:app:clean \
             --stacktrace
 
-
       # ============================================================
-      # 12. BUILD DEBUG APK
+      # 13. BUILD DEBUG APK
       # ============================================================
       - name: Build A227C Debug APK
         shell: bash
@@ -358,9 +369,8 @@ jobs:
             :android:app:assembleDebug \
             --stacktrace
 
-
       # ============================================================
-      # 13. VERIFY DEBUG APK
+      # 14. VERIFY DEBUG APK
       # ============================================================
       - name: Verify Debug APK
         shell: bash
@@ -375,10 +385,7 @@ jobs:
           fi
 
           mapfile -t APKS < <(
-            find "$APK_DIR" \
-              -type f \
-              -name '*.apk' \
-              -print
+            find "$APK_DIR" -type f -name '*.apk' -print
           )
 
           if [ "${#APKS[@]}" -eq 0 ]; then
@@ -387,14 +394,11 @@ jobs:
           fi
 
           echo "A227C DEBUG APK GENERATED"
-
           printf '%s\n' "${APKS[@]}"
-
           ls -lh "${APKS[@]}"
 
-
       # ============================================================
-      # 14. UPLOAD DEBUG APK
+      # 15. UPLOAD DEBUG APK
       # ============================================================
       - name: Upload A227C Debug APK
         uses: actions/upload-artifact@v4
@@ -404,9 +408,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-
       # ============================================================
-      # 15. BUILD RELEASE APK
+      # 16. BUILD RELEASE APK
       # ============================================================
       - name: Build A227C Release APK
         shell: bash
@@ -420,9 +423,8 @@ jobs:
             :android:app:assembleRelease \
             --stacktrace
 
-
       # ============================================================
-      # 16. VERIFY RELEASE APK
+      # 17. VERIFY RELEASE APK
       # ============================================================
       - name: Verify Release APK
         shell: bash
@@ -437,10 +439,7 @@ jobs:
           fi
 
           mapfile -t APKS < <(
-            find "$APK_DIR" \
-              -type f \
-              -name '*.apk' \
-              -print
+            find "$APK_DIR" -type f -name '*.apk' -print
           )
 
           if [ "${#APKS[@]}" -eq 0 ]; then
@@ -449,14 +448,11 @@ jobs:
           fi
 
           echo "A227C RELEASE APK GENERATED"
-
           printf '%s\n' "${APKS[@]}"
-
           ls -lh "${APKS[@]}"
 
-
       # ============================================================
-      # 17. UPLOAD RELEASE APK
+      # 18. UPLOAD RELEASE APK
       # ============================================================
       - name: Upload A227C Release APK
         uses: actions/upload-artifact@v4
@@ -466,9 +462,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-
       # ============================================================
-      # 18. FINAL SUMMARY
+      # 19. FINAL SUMMARY
       # ============================================================
       - name: A227C Build Summary
         if: success()
@@ -486,5 +481,6 @@ jobs:
           echo ""
           echo "Official A227C branding: VERIFIED"
           echo "Gradle root: VERIFIED"
+          echo "AndroidX: VERIFIED"
           echo "======================================================"
           
