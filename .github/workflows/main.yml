@@ -16,23 +16,46 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # ============================================================
+      # 2. JAVA 17
+      # ============================================================
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+
+      # ============================================================
+      # 3. INSTALL GRADLE 8.7
+      # ============================================================
       - name: Install Gradle 8.7
         shell: bash
         run: |
           set -euo pipefail
-          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip -O /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /opt
+
+          wget -q \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+            -O /tmp/gradle-8.7-bin.zip
+
+          unzip -q /tmp/gradle-8.7-bin.zip -d /opt
+
           echo "/opt/gradle-8.7/bin" >> "$GITHUB_PATH"
 
+          echo "Gradle 8.7 installed."
+
+
+      # ============================================================
+      # 4. ANDROID SDK
+      # ============================================================
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
@@ -40,18 +63,33 @@ jobs:
           log-accepted-android-sdk-licenses: false
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
+
+      # ============================================================
+      # 5. VERIFY ANDROID SDK
+      # ============================================================
       - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
+
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          test -n "$SDK"
+
+          if [ -z "$SDK" ]; then
+            echo "ERROR: Android SDK not detected."
+            exit 1
+          fi
+
           test -d "$SDK/platforms/android-35"
           test -d "$SDK/build-tools/35.0.0"
           test -d "$SDK/platform-tools"
+
           echo "Android SDK verified: $SDK"
 
-      - name: Locate and extract A227C ZIP
+
+      # ============================================================
+      # 6. LOCATE AND EXTRACT REPAIRED A227C ZIP
+      # ============================================================
+      - name: Locate and extract A227C project
         shell: bash
         run: |
           set -euo pipefail
@@ -64,26 +102,41 @@ jobs:
             local SEARCH_DIR="$1"
 
             while IFS= read -r SETTINGS; do
+
               local DIR
               DIR="$(dirname "$SETTINGS")"
 
               if [ -f "$DIR/android/app/build.gradle.kts" ] || \
-                 [ -f "$DIR/android/app/build.gradle" ] || \
-                 [ -f "$DIR/app/build.gradle.kts" ] || \
-                 [ -f "$DIR/app/build.gradle" ]; then
+                 [ -f "$DIR/android/app/build.gradle" ]; then
+
                 PROJECT_DIR="$DIR"
                 return 0
+
               fi
+
             done < <(
               find "$SEARCH_DIR" \
-                -type d \( -name .git -o -name .gradle -o -name build \) -prune \
-                -o -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print
+                -type d \( \
+                  -name .git \
+                  -o -name .gradle \
+                  -o -name build \
+                \) -prune \
+                -o \
+                -type f \( \
+                  -name settings.gradle.kts \
+                  -o -name settings.gradle \
+                \) \
+                -print
             )
 
             return 1
           }
 
+          echo "Searching for A227C project..."
+
           if ! find_project "$WORKSPACE"; then
+
+            echo "Searching for repaired A227C ZIP..."
 
             ZIP_FILE="$(find "$WORKSPACE" \
               -type f \
@@ -92,163 +145,348 @@ jobs:
               -print -quit || true)"
 
             if [ -z "$ZIP_FILE" ]; then
-              ZIP_FILE="$(find "$WORKSPACE" \
+
+              echo "ERROR: Expected A227C ZIP not found."
+
+              find "$WORKSPACE" \
+                -maxdepth 5 \
                 -type f \
-                -iname '*A227C*.zip' \
-                ! -iname 'gradle-*.zip' \
-                ! -path '*/.git/*' \
-                -print -quit || true)"
-            fi
+                -print
 
-            if [ -z "$ZIP_FILE" ]; then
-              echo "ERROR: A227C ZIP not found."
-              find "$WORKSPACE" -maxdepth 5 -type f -print
               exit 1
+
             fi
 
-            echo "Selected ZIP: $ZIP_FILE"
+            echo "Selected ZIP:"
+            echo "$ZIP_FILE"
+
+            echo "Checking ZIP integrity..."
+
             unzip -t "$ZIP_FILE"
 
             rm -rf "$EXTRACT_DIR"
             mkdir -p "$EXTRACT_DIR"
+
+            echo "Extracting A227C..."
+
             unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
 
             if ! find_project "$EXTRACT_DIR"; then
-              echo "ERROR: Android Gradle project not found inside ZIP."
-              find "$EXTRACT_DIR" -maxdepth 7 -type f -print
+
+              echo "ERROR: A227C Gradle project not found."
+
+              find "$EXTRACT_DIR" \
+                -maxdepth 8 \
+                -type f \
+                -print
+
               exit 1
+
             fi
+
           fi
 
           PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+
           echo "BUILD_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "A227C project root: $PROJECT_DIR"
+          echo ""
+          echo "=============================================="
+          echo "A227C PROJECT ROOT FOUND"
+          echo "=============================================="
+          echo "$PROJECT_DIR"
+          echo "=============================================="
 
-      - name: Verify Android project and logo
+
+      # ============================================================
+      # 7. VERIFY ROOT KOTLIN GRADLE SETTINGS
+      # ============================================================
+      - name: Verify A227C Gradle configuration
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$BUILD_DIR"
 
-          if [ -f android/app/build.gradle.kts ] || [ -f android/app/build.gradle ]; then
-            MODULE="android/app"
-          elif [ -f app/build.gradle.kts ] || [ -f app/build.gradle ]; then
-            MODULE="app"
+          SETTINGS=""
+
+          if [ -f settings.gradle.kts ]; then
+            SETTINGS="settings.gradle.kts"
+          elif [ -f settings.gradle ]; then
+            SETTINGS="settings.gradle"
           else
-            echo "ERROR: Android module not found."
+            echo "ERROR: Root settings file missing."
             exit 1
           fi
 
-          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
-            echo "ERROR: Gradle settings file missing."
+          if [ ! -f build.gradle.kts ] && \
+             [ ! -f build.gradle ]; then
+            echo "ERROR: Root build.gradle file missing."
             exit 1
           fi
 
-          if [ ! -f "$MODULE/src/main/AndroidManifest.xml" ]; then
-            echo "ERROR: Android manifest missing."
+          if [ ! -f android/app/build.gradle.kts ] && \
+             [ ! -f android/app/build.gradle ]; then
+            echo "ERROR: Android app Gradle file missing."
             exit 1
           fi
 
-          if ! find "$MODULE/src/main" -type f \( -name '*.kt' -o -name '*.java' \) -print -quit | grep -q .; then
+          if [ "$SETTINGS" = "settings.gradle.kts" ]; then
+
+            if ! grep -Fq \
+              'rootProject.name = "UNIVERSAL-TRADING-BOT-A227C"' \
+              "$SETTINGS"; then
+
+              echo "ERROR: Kotlin project name configuration is incorrect."
+              cat "$SETTINGS"
+              exit 1
+
+            fi
+
+            if ! grep -Fq 'include(":android:app")' "$SETTINGS"; then
+
+              echo "ERROR: Android module include declaration is incorrect."
+              cat "$SETTINGS"
+              exit 1
+
+            fi
+
+          fi
+
+          echo "Gradle root:"
+          pwd
+
+          echo "Settings file:"
+          cat "$SETTINGS"
+
+          echo "Android module:"
+          ls -la android/app
+
+          echo "A227C Gradle structure verified."
+
+
+      # ============================================================
+      # 8. VERIFY ANDROID MANIFEST AND SOURCE
+      # ============================================================
+      - name: Verify Android source files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$BUILD_DIR"
+
+          test -f android/app/src/main/AndroidManifest.xml
+
+          if ! find android/app/src/main \
+            -type f \
+            \( -name '*.kt' -o -name '*.java' \) \
+            -print -quit | grep -q .; then
+
             echo "ERROR: Android source files missing."
             exit 1
+
           fi
 
-          if [ "$MODULE" = "android/app" ]; then
-            LOGO="$MODULE/src/main/res/drawable-nodpi/a227c_logo.png"
-          else
-            LOGO="$MODULE/src/main/res/drawable-nodpi/a227c_logo.png"
-          fi
+          echo "Android manifest verified."
+
+          find android/app/src/main \
+            -type f \
+            \( -name '*.kt' -o -name '*.java' \) \
+            -print
+
+
+      # ============================================================
+      # 9. VERIFY OFFICIAL A227C LOGO
+      # ============================================================
+      - name: Verify official A227C logo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$BUILD_DIR"
+
+          LOGO="android/app/src/main/res/drawable-nodpi/a227c_logo.png"
 
           if [ ! -s "$LOGO" ]; then
-            echo "ERROR: Official A227C logo missing: $LOGO"
-            find "$MODULE/src/main/res" -type f -print
+
+            echo "ERROR: Official A227C logo missing."
+
+            find android/app/src/main/res \
+              -type f \
+              -print
+
             exit 1
+
           fi
 
-          echo "Android module verified: $MODULE"
           echo "Official A227C logo verified."
-          echo "BUILD_MODULE=$MODULE" >> "$GITHUB_ENV"
 
+          ls -lh "$LOGO"
+
+
+      # ============================================================
+      # 10. VERIFY GRADLE 8.7
+      # ============================================================
       - name: Verify Gradle 8.7
         shell: bash
-        run: gradle --version
+        run: |
+          set -euo pipefail
 
-      - name: Clean Android project
+          gradle --version
+
+
+      # ============================================================
+      # 11. CLEAN PROJECT
+      # IMPORTANT: RUN FROM ROOT GRADLE PROJECT
+      # ============================================================
+      - name: Clean A227C Android project
         shell: bash
         run: |
           set -euo pipefail
-          cd "$BUILD_DIR"
-          gradle --no-daemon -p "$BUILD_MODULE" clean --stacktrace
 
-      - name: Build Debug APK
+          cd "$BUILD_DIR"
+
+          gradle \
+            --no-daemon \
+            :android:app:clean \
+            --stacktrace
+
+
+      # ============================================================
+      # 12. BUILD DEBUG APK
+      # ============================================================
+      - name: Build A227C Debug APK
         shell: bash
         run: |
           set -euo pipefail
-          cd "$BUILD_DIR"
-          gradle --no-daemon -p "$BUILD_MODULE" assembleDebug --stacktrace
 
+          cd "$BUILD_DIR"
+
+          gradle \
+            --no-daemon \
+            :android:app:assembleDebug \
+            --stacktrace
+
+
+      # ============================================================
+      # 13. VERIFY DEBUG APK
+      # ============================================================
       - name: Verify Debug APK
         shell: bash
         run: |
           set -euo pipefail
-          APK_DIR="$BUILD_DIR/$BUILD_MODULE/build/outputs/apk/debug"
-          APK="$(find "$APK_DIR" -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+
+          APK_DIR="$BUILD_DIR/android/app/build/outputs/apk/debug"
+
+          APK="$(find "$APK_DIR" \
+            -type f \
+            -name '*.apk' \
+            -print -quit 2>/dev/null || true)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Debug APK missing."
-            find "$BUILD_DIR/$BUILD_MODULE/build/outputs" -type f -print || true
+
+            echo "ERROR: Debug APK not generated."
+
+            find "$BUILD_DIR/android/app/build/outputs" \
+              -type f \
+              -print 2>/dev/null || true
+
             exit 1
+
           fi
 
+          echo "A227C DEBUG APK GENERATED"
           ls -lh "$APK"
 
-      - name: Upload Debug APK
+
+      # ============================================================
+      # 14. UPLOAD DEBUG APK
+      # ============================================================
+      - name: Upload A227C Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: UNIVERSAL-TRADING-BOT-A227C-Debug-APK
-          path: ${{ env.BUILD_DIR }}/${{ env.BUILD_MODULE }}/build/outputs/apk/debug/*.apk
+          path: ${{ env.BUILD_DIR }}/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Build Release APK
+
+      # ============================================================
+      # 15. BUILD RELEASE APK
+      # ============================================================
+      - name: Build A227C Release APK
         shell: bash
         run: |
           set -euo pipefail
-          cd "$BUILD_DIR"
-          gradle --no-daemon -p "$BUILD_MODULE" assembleRelease --stacktrace
 
+          cd "$BUILD_DIR"
+
+          gradle \
+            --no-daemon \
+            :android:app:assembleRelease \
+            --stacktrace
+
+
+      # ============================================================
+      # 16. VERIFY RELEASE APK
+      # ============================================================
       - name: Verify Release APK
         shell: bash
         run: |
           set -euo pipefail
-          APK_DIR="$BUILD_DIR/$BUILD_MODULE/build/outputs/apk/release"
-          APK="$(find "$APK_DIR" -type f -name '*.apk' -print -quit 2>/dev/null || true)"
+
+          APK_DIR="$BUILD_DIR/android/app/build/outputs/apk/release"
+
+          APK="$(find "$APK_DIR" \
+            -type f \
+            -name '*.apk' \
+            -print -quit 2>/dev/null || true)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Release APK missing."
-            find "$BUILD_DIR/$BUILD_MODULE/build/outputs" -type f -print || true
+
+            echo "ERROR: Release APK not generated."
+
+            find "$BUILD_DIR/android/app/build/outputs" \
+              -type f \
+              -print 2>/dev/null || true
+
             exit 1
+
           fi
 
+          echo "A227C RELEASE APK GENERATED"
           ls -lh "$APK"
 
-      - name: Upload Release APK
+
+      # ============================================================
+      # 17. UPLOAD RELEASE APK
+      # ============================================================
+      - name: Upload A227C Release APK
         uses: actions/upload-artifact@v4
         with:
           name: UNIVERSAL-TRADING-BOT-A227C-Release-APK
-          path: ${{ env.BUILD_DIR }}/${{ env.BUILD_MODULE }}/build/outputs/apk/release/*.apk
+          path: ${{ env.BUILD_DIR }}/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Build Summary
+
+      # ============================================================
+      # 18. FINAL SUMMARY
+      # ============================================================
+      - name: A227C Build Summary
         if: success()
         shell: bash
         run: |
-          echo "=============================================="
-          echo "UNIVERSAL-TRADING-BOT-A227C"
-          echo "BUILD COMPLETED SUCCESSFULLY"
-          echo "Debug APK: GENERATED"
-          echo "Release APK: GENERATED"
-          echo "=============================================="
+          echo ""
+          echo "======================================================"
+          echo "       UNIVERSAL-TRADING-BOT-A227C"
+          echo "======================================================"
+          echo ""
+          echo "ANDROID BUILD COMPLETED SUCCESSFULLY"
+          echo ""
+          echo "Debug APK:   GENERATED AND UPLOADED"
+          echo "Release APK: GENERATED AND UPLOADED"
+          echo ""
+          echo "Official A227C branding: VERIFIED"
+          echo "Gradle root: VERIFIED"
+          echo "======================================================"
