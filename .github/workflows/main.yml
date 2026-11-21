@@ -1,4 +1,4 @@
-name: A227C Complete Build and Artifact
+name: A227C Hardened Build and Artifact
 
 on:
   workflow_dispatch:
@@ -12,204 +12,164 @@ permissions:
 
 jobs:
   build:
-    name: A227C Validation and Build
+    name: A227C Validation and Artifact Build
     runs-on: ubuntu-22.04
 
+    env:
+      ARTIFACT_DIR: ${{ github.workspace }}/a227c-artifacts
+
     steps:
+
       # ============================================================
       # 1. CHECKOUT
       # ============================================================
-      - name: Checkout repository
+      - name: Checkout A227C
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ============================================================
-      # 2. SHOW REPOSITORY CONTENTS
+      # 2. CREATE ARTIFACT DIRECTORY IMMEDIATELY
       # ============================================================
-      - name: Inspect repository
+      - name: Initialize artifact workspace
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "============================================================"
-          echo "A227C REPOSITORY"
-          echo "============================================================"
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR/source"
+          mkdir -p "$ARTIFACT_DIR/reports"
 
+          echo "Workspace:"
           pwd
+
           echo ""
-
-          find . -maxdepth 3 -type f \
-            \( -name "*.zip" \
-            -o -name "pyproject.toml" \
-            -o -name "requirements.txt" \
-            -o -name "settings.gradle" \
-            -o -name "settings.gradle.kts" \
-            -o -name "build.gradle" \
-            -o -name "build.gradle.kts" \
-            -o -name "gradlew" \) \
-            -print | sort || true
+          echo "Artifact directory:"
+          ls -la "$ARTIFACT_DIR"
 
       # ============================================================
-      # 3. DISCOVER A227C SOURCE
+      # 3. INSPECT ACTUAL CHECKED-OUT REPOSITORY
       # ============================================================
-      - name: Discover A227C source
-        id: source
+      - name: Inspect repository structure
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for A227C source..."
+          echo "============================================================"
+          echo "A227C REPOSITORY STRUCTURE"
+          echo "============================================================"
 
-          SOURCE_ARCHIVE=""
-
-          while IFS= read -r candidate; do
-            if unzip -t "$candidate" >/dev/null 2>&1; then
-              if unzip -Z1 "$candidate" | grep -Eq \
-                '(^|/)backend/a227c/|(^|/)a227c/research/|(^|/)a227c_r[0-9]+/backend/a227c/'; then
-                SOURCE_ARCHIVE="$candidate"
-                break
-              fi
-            fi
-          done < <(find . -type f -name "*.zip" -print | sort)
-
-          if [ -n "$SOURCE_ARCHIVE" ]; then
-            echo "Source archive found: $SOURCE_ARCHIVE"
-            echo "source_archive=$SOURCE_ARCHIVE" >> "$GITHUB_OUTPUT"
-          else
-            echo "No separate A227C source archive found."
-            echo "The checked-out repository itself will be treated as the A227C source."
-            echo "source_archive=" >> "$GITHUB_OUTPUT"
-          fi
+          find "$GITHUB_WORKSPACE" \
+            -maxdepth 5 \
+            -type f \
+            ! -path "*/.git/*" \
+            | sort \
+            | head -500
 
       # ============================================================
-      # 4. EXTRACT SOURCE ARCHIVE IF PRESENT
+      # 4. LOCATE ACTUAL A227C ROOT
       # ============================================================
-      - name: Extract A227C source archive
-        id: extract
-        shell: bash
-        env:
-          SOURCE_ARCHIVE: ${{ steps.source.outputs.source_archive }}
-        run: |
-          set -euo pipefail
-
-          if [ -n "$SOURCE_ARCHIVE" ]; then
-            rm -rf "$GITHUB_WORKSPACE/a227c-source"
-            mkdir -p "$GITHUB_WORKSPACE/a227c-source"
-
-            unzip -q "$SOURCE_ARCHIVE" -d "$GITHUB_WORKSPACE/a227c-source"
-
-            echo "A227C archive extracted."
-          else
-            mkdir -p "$GITHUB_WORKSPACE/a227c-source"
-            rsync -a \
-              --exclude ".git" \
-              --exclude "a227c-source" \
-              ./ "$GITHUB_WORKSPACE/a227c-source/"
-
-            echo "Checked-out repository copied as A227C source."
-          fi
-
-          echo "Source tree:"
-          find "$GITHUB_WORKSPACE/a227c-source" -maxdepth 4 -type f \
-            | sort | head -300
-
-      # ============================================================
-      # 5. LOCATE PROJECT ROOT
-      # ============================================================
-      - name: Locate A227C project root
+      - name: Locate A227C project
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          SEARCH_ROOT="$GITHUB_WORKSPACE/a227c-source"
-
+          ROOT="$GITHUB_WORKSPACE"
           PROJECT_DIR=""
 
-          # First choice: a directory containing backend/a227c.
-          while IFS= read -r backend_dir; do
-            candidate="$(dirname "$backend_dir")"
+          echo "Searching for backend/a227c..."
 
-            if [ -d "$candidate/backend/a227c" ]; then
-              PROJECT_DIR="$candidate"
+          while IFS= read -r candidate; do
+            parent="$(dirname "$candidate")"
+
+            if [ -d "$parent/a227c" ]; then
+              PROJECT_DIR="$parent"
               break
             fi
-          done < <(find "$SEARCH_ROOT" -type d -name "backend" -print | sort)
+          done < <(
+            find "$ROOT" \
+              -type d \
+              -name "backend" \
+              -not -path "*/.git/*" \
+              | sort
+          )
 
-          # Second choice: locate any a227c directory and derive its root.
           if [ -z "$PROJECT_DIR" ]; then
-            while IFS= read -r a227c_dir; do
-              parent="$(dirname "$a227c_dir")"
+            echo "Searching directly for a227c directories..."
+
+            while IFS= read -r candidate; do
+              parent="$(dirname "$candidate")"
 
               if [ "$(basename "$parent")" = "backend" ]; then
                 PROJECT_DIR="$(dirname "$parent")"
                 break
               fi
-            done < <(find "$SEARCH_ROOT" -type d -name "a227c" -print | sort)
-          fi
-
-          # Third choice: source root itself.
-          if [ -z "$PROJECT_DIR" ] && [ -d "$SEARCH_ROOT/backend/a227c" ]; then
-            PROJECT_DIR="$SEARCH_ROOT"
+            done < <(
+              find "$ROOT" \
+                -type d \
+                -name "a227c" \
+                -not -path "*/.git/*" \
+                | sort
+            )
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Could not locate A227C project root."
-            find "$SEARCH_ROOT" -maxdepth 5 -type d | sort
+            echo ""
+            echo "ERROR: A227C project root could not be located."
+            echo ""
+            echo "Directories containing backend:"
+            find "$ROOT" \
+              -type d \
+              -name "backend" \
+              -not -path "*/.git/*" \
+              | sort || true
             exit 1
           fi
 
-          echo "A227C project root:"
+          echo ""
+          echo "A227C PROJECT ROOT:"
           echo "$PROJECT_DIR"
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       # ============================================================
-      # 6. VALIDATE BACKEND
+      # 5. VALIDATE BACKEND
       # ============================================================
       - name: Validate A227C backend
-        id: backend
-        shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          if [ ! -d "$PROJECT_DIR/backend" ]; then
-            echo "ERROR: backend directory not found."
-            exit 1
-          fi
+          test -d "$PROJECT_DIR/backend"
+          test -d "$PROJECT_DIR/backend/a227c"
 
-          if [ ! -d "$PROJECT_DIR/backend/a227c" ]; then
-            echo "ERROR: backend/a227c directory not found."
-            exit 1
-          fi
+          echo "Backend directory verified."
 
-          echo "Backend directory:"
-          find "$PROJECT_DIR/backend/a227c" -maxdepth 4 -type f | sort
-
-          echo "backend_available=true" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "A227C modules:"
+          find "$PROJECT_DIR/backend/a227c" \
+            -maxdepth 4 \
+            -type f \
+            | sort
 
       # ============================================================
-      # 7. PYTHON
+      # 6. SET UP PYTHON
       # ============================================================
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            ${{ steps.project.outputs.project_dir }}/requirements.txt
-            ${{ steps.project.outputs.project_dir }}/pyproject.toml
 
       # ============================================================
-      # 8. INSTALL PYTHON TEST/BUILD DEPENDENCIES
+      # 7. INSTALL DEPENDENCIES
       # ============================================================
       - name: Install Python dependencies
-        shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -220,170 +180,215 @@ jobs:
           fi
 
           if [ -f "$PROJECT_DIR/pyproject.toml" ]; then
-            python -m pip install -e "$PROJECT_DIR" || true
+            python -m pip install -e "$PROJECT_DIR"
           fi
 
-          python -m pip install pytest pytest-asyncio httpx
+          python -m pip install \
+            pytest \
+            pytest-asyncio \
+            httpx
 
       # ============================================================
-      # 9. PYTHON PATH
+      # 8. CONFIGURE PYTHON PATH
       # ============================================================
-      - name: Configure A227C Python path
+      - name: Configure Python path
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           echo "PYTHONPATH=$PROJECT_DIR/backend" >> "$GITHUB_ENV"
 
       # ============================================================
-      # 10. VERIFY IMPORT
+      # 9. VERIFY IMPORT
       # ============================================================
-      - name: Verify A227C import
+      - name: Verify A227C imports
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
 
-          python -c "import a227c; print('A227C import: OK')"
-          python -c "import a227c.core.indicators; print('A227C indicators: OK')"
+          python -c "import a227c"
+          python -c "import a227c.core.indicators"
+
+          echo "A227C imports: PASSED"
 
       # ============================================================
-      # 11. COMPILE PYTHON
+      # 10. COMPILE
       # ============================================================
-      - name: Compile Python sources
+      - name: Compile A227C Python
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
           python -m compileall -q "$PROJECT_DIR/backend"
 
-          echo "Python compilation: OK"
+          echo "Python compilation: PASSED"
 
       # ============================================================
-      # 12. RUN TESTS
+      # 11. RUN TESTS
       # ============================================================
       - name: Run A227C tests
-        id: tests
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
 
-          TEST_DIR=""
-
           if [ -d "backend/tests" ]; then
             TEST_DIR="backend/tests"
           elif [ -d "tests" ]; then
             TEST_DIR="tests"
-          fi
-
-          if [ -z "$TEST_DIR" ]; then
-            echo "ERROR: No A227C test directory found."
+          else
+            echo "ERROR: No test directory found."
             exit 1
           fi
 
-          echo "Test directory: $TEST_DIR"
+          echo "Running:"
+          echo "$TEST_DIR"
 
-          python -m pytest "$TEST_DIR" \
+          python -m pytest \
+            "$TEST_DIR" \
             -o asyncio_default_fixture_loop_scope=function \
             -ra
 
-          echo "tests_passed=true" >> "$GITHUB_OUTPUT"
-
       # ============================================================
-      # 13. CREATE VALIDATION REPORT
+      # 12. CREATE VALIDATION REPORT
       # ============================================================
       - name: Create validation report
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          REPORT_DIR="$GITHUB_WORKSPACE/a227c-artifacts"
-          mkdir -p "$REPORT_DIR"
+          REPORT="$ARTIFACT_DIR/reports/A227C-VALIDATION-REPORT.txt"
 
           {
-            echo "A227C CI VALIDATION REPORT"
-            echo "=========================="
+            echo "UNIVERSAL-TRADING-BOT-A227C"
+            echo "CI VALIDATION REPORT"
+            echo "===================="
             echo ""
-            echo "Project:"
+            echo "Commit:"
+            git rev-parse HEAD
+            echo ""
+            echo "Project root:"
             echo "$PROJECT_DIR"
-            echo ""
-            echo "Backend:"
-            echo "VALIDATED"
             echo ""
             echo "Python:"
             python --version
+            echo ""
+            echo "Backend:"
+            echo "VALIDATED"
             echo ""
             echo "Compilation:"
             echo "PASSED"
             echo ""
             echo "Tests:"
             echo "PASSED"
-            echo ""
-            echo "Commit:"
-            git rev-parse HEAD
-            echo ""
-            echo "Workflow:"
-            echo "${GITHUB_WORKFLOW}"
-            echo ""
-            echo "Run:"
-            echo "${GITHUB_RUN_ID}"
-          } > "$REPORT_DIR/A227C-VALIDATION-REPORT.txt"
+          } > "$REPORT"
 
-          cat "$REPORT_DIR/A227C-VALIDATION-REPORT.txt"
+          test -s "$REPORT"
+
+          echo ""
+          cat "$REPORT"
+
+      # ============================================================
+      # 13. PACKAGE COMPLETE SOURCE
+      # ============================================================
+      - name: Package complete A227C source
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_ZIP="$ARTIFACT_DIR/source/UNIVERSAL-TRADING-BOT-A227C-COMPLETE-SOURCE.zip"
+
+          cd "$PROJECT_DIR"
+
+          zip -qr "$SOURCE_ZIP" . \
+            -x ".git/*" \
+            -x "__pycache__/*" \
+            -x "*.pyc" \
+            -x ".pytest_cache/*"
+
+          test -s "$SOURCE_ZIP"
+
+          echo ""
+          echo "SOURCE ZIP CREATED:"
+          ls -lh "$SOURCE_ZIP"
 
       # ============================================================
       # 14. DETECT REAL ANDROID PROJECT
       # ============================================================
       - name: Detect Android application
         id: android
-        shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          ANDROID_DIR=""
+          ANDROID_ROOT=""
 
-          # Search for a real Android app module.
           while IFS= read -r app_dir; do
-            if [ -f "$app_dir/build.gradle" ] || \
-               [ -f "$app_dir/build.gradle.kts" ]; then
 
-              root="$(dirname "$app_dir")"
+            parent="$(dirname "$app_dir")"
 
-              if [ -f "$root/settings.gradle" ] || \
-                 [ -f "$root/settings.gradle.kts" ]; then
-
-                if grep -Rqs \
-                  "com.android.application\|com.android.library" \
-                  "$root"/*.gradle \
-                  "$root"/*.gradle.kts \
-                  "$root/build.gradle" \
-                  "$root/build.gradle.kts" 2>/dev/null; then
-
-                  ANDROID_DIR="$root"
-                  break
-                fi
-              fi
+            if [ ! -f "$app_dir/build.gradle" ] && \
+               [ ! -f "$app_dir/build.gradle.kts" ]; then
+              continue
             fi
-          done < <(find "$PROJECT_DIR" -type d -name "app" -print | sort)
 
-          if [ -n "$ANDROID_DIR" ]; then
-            echo "Real Android project found:"
-            echo "$ANDROID_DIR"
+            if [ ! -f "$parent/settings.gradle" ] && \
+               [ ! -f "$parent/settings.gradle.kts" ]; then
+              continue
+            fi
+
+            if grep -Rqs \
+              "com.android.application" \
+              "$parent"/*.gradle \
+              "$parent"/*.gradle.kts \
+              "$app_dir"/*.gradle \
+              "$app_dir"/*.gradle.kts \
+              2>/dev/null; then
+
+              ANDROID_ROOT="$parent"
+              break
+            fi
+
+          done < <(
+            find "$PROJECT_DIR" \
+              -type d \
+              -name "app" \
+              -not -path "*/.git/*" \
+              | sort
+          )
+
+          if [ -n "$ANDROID_ROOT" ]; then
+
+            echo "ANDROID PROJECT FOUND:"
+            echo "$ANDROID_ROOT"
 
             echo "android_available=true" >> "$GITHUB_OUTPUT"
-            echo "android_dir=$ANDROID_DIR" >> "$GITHUB_OUTPUT"
+            echo "android_root=$ANDROID_ROOT" >> "$GITHUB_OUTPUT"
+
           else
-            echo "No verified Android application exists in this source."
+
+            echo "No Android application was found in the actual A227C source."
+
             echo "android_available=false" >> "$GITHUB_OUTPUT"
-            echo "android_dir=" >> "$GITHUB_OUTPUT"
+            echo "android_root=" >> "$GITHUB_OUTPUT"
+
           fi
 
       # ============================================================
@@ -397,7 +402,7 @@ jobs:
           java-version: "17"
 
       # ============================================================
-      # 16. SET UP GRADLE 8.7
+      # 16. GRADLE 8.7
       # ============================================================
       - name: Set up Gradle 8.7
         if: steps.android.outputs.android_available == 'true'
@@ -408,15 +413,15 @@ jobs:
       # ============================================================
       # 17. BUILD DEBUG APK
       # ============================================================
-      - name: Build Android Debug APK
+      - name: Build Debug APK
         if: steps.android.outputs.android_available == 'true'
         env:
-          ANDROID_DIR: ${{ steps.android.outputs.android_dir }}
+          ANDROID_ROOT: ${{ steps.android.outputs.android_root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$ANDROID_DIR"
+          cd "$ANDROID_ROOT"
 
           if [ -x "./gradlew" ]; then
             ./gradlew --no-daemon clean assembleDebug
@@ -424,34 +429,41 @@ jobs:
             gradle --no-daemon clean assembleDebug
           fi
 
-          DEBUG_APK="$(find . -type f -path "*/build/outputs/apk/*" \
-            -name "*debug*.apk" | head -1 || true)"
+          DEBUG_APK="$(
+            find "$ANDROID_ROOT" \
+              -type f \
+              -path "*/build/outputs/apk/*" \
+              -name "*debug*.apk" \
+              | head -1
+          )"
 
           if [ -z "$DEBUG_APK" ]; then
-            echo "ERROR: Android Debug APK was not produced."
-            find . -type f -path "*/build/outputs/*" -print || true
+            echo "ERROR: Debug APK was not produced."
             exit 1
           fi
 
-          echo "Debug APK:"
-          echo "$DEBUG_APK"
+          mkdir -p "$ARTIFACT_DIR/android"
 
-          mkdir -p "$GITHUB_WORKSPACE/a227c-artifacts/android-debug"
           cp "$DEBUG_APK" \
-            "$GITHUB_WORKSPACE/a227c-artifacts/android-debug/A227C-debug.apk"
+            "$ARTIFACT_DIR/android/A227C-debug.apk"
+
+          test -s "$ARTIFACT_DIR/android/A227C-debug.apk"
+
+          echo "DEBUG APK VERIFIED:"
+          ls -lh "$ARTIFACT_DIR/android/A227C-debug.apk"
 
       # ============================================================
       # 18. BUILD RELEASE APK
       # ============================================================
-      - name: Build Android Release APK
+      - name: Build Release APK
         if: steps.android.outputs.android_available == 'true'
         env:
-          ANDROID_DIR: ${{ steps.android.outputs.android_dir }}
+          ANDROID_ROOT: ${{ steps.android.outputs.android_root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$ANDROID_DIR"
+          cd "$ANDROID_ROOT"
 
           if [ -x "./gradlew" ]; then
             ./gradlew --no-daemon assembleRelease
@@ -459,140 +471,126 @@ jobs:
             gradle --no-daemon assembleRelease
           fi
 
-          RELEASE_APK="$(find . -type f -path "*/build/outputs/apk/*" \
-            -name "*release*.apk" | head -1 || true)"
+          RELEASE_APK="$(
+            find "$ANDROID_ROOT" \
+              -type f \
+              -path "*/build/outputs/apk/*" \
+              -name "*release*.apk" \
+              | head -1
+          )"
 
           if [ -z "$RELEASE_APK" ]; then
-            echo "ERROR: Android Release APK was not produced."
-            find . -type f -path "*/build/outputs/*" -print || true
+            echo "ERROR: Release APK was not produced."
             exit 1
           fi
 
-          echo "Release APK:"
-          echo "$RELEASE_APK"
+          mkdir -p "$ARTIFACT_DIR/android"
 
-          mkdir -p "$GITHUB_WORKSPACE/a227c-artifacts/android-release"
           cp "$RELEASE_APK" \
-            "$GITHUB_WORKSPACE/a227c-artifacts/android-release/A227C-release.apk"
+            "$ARTIFACT_DIR/android/A227C-release.apk"
+
+          test -s "$ARTIFACT_DIR/android/A227C-release.apk"
+
+          echo "RELEASE APK VERIFIED:"
+          ls -lh "$ARTIFACT_DIR/android/A227C-release.apk"
 
       # ============================================================
-      # 19. CREATE COMPLETE SOURCE ZIP
+      # 19. FINAL ARTIFACT VERIFICATION
       # ============================================================
-      - name: Package complete A227C source
-        env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+      - name: Verify final artifacts
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/a227c-artifacts/source"
-
-          cd "$PROJECT_DIR"
-
-          zip -qr \
-            "$GITHUB_WORKSPACE/a227c-artifacts/source/UNIVERSAL-TRADING-BOT-A227C-COMPLETE-SOURCE.zip" \
-            . \
-            -x ".git/*" \
-            -x "__pycache__/*" \
-            -x "*.pyc" \
-            -x ".pytest_cache/*"
-
-          test -s \
-            "$GITHUB_WORKSPACE/a227c-artifacts/source/UNIVERSAL-TRADING-BOT-A227C-COMPLETE-SOURCE.zip"
-
-          echo "Source ZIP created."
-
-      # ============================================================
-      # 20. VERIFY ALL ARTIFACTS BEFORE UPLOAD
-      # ============================================================
-      - name: Verify produced artifacts
-        id: artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ARTIFACT_DIR="$GITHUB_WORKSPACE/a227c-artifacts"
-
+          echo ""
           echo "============================================================"
-          echo "PRODUCED A227C ARTIFACTS"
+          echo "FINAL A227C ARTIFACT VERIFICATION"
           echo "============================================================"
-
-          find "$ARTIFACT_DIR" -type f -printf '%p (%s bytes)\n' | sort
 
           SOURCE_ZIP="$ARTIFACT_DIR/source/UNIVERSAL-TRADING-BOT-A227C-COMPLETE-SOURCE.zip"
-          REPORT="$ARTIFACT_DIR/A227C-VALIDATION-REPORT.txt"
+          REPORT="$ARTIFACT_DIR/reports/A227C-VALIDATION-REPORT.txt"
 
+          echo ""
+          echo "Artifact directory:"
+          find "$ARTIFACT_DIR" \
+            -type f \
+            -printf '%p — %s bytes\n' \
+            | sort
+
+          echo ""
+
+          # Mandatory source artifact.
           if [ ! -s "$SOURCE_ZIP" ]; then
-            echo "ERROR: Complete source ZIP is missing."
+            echo "ERROR: Mandatory source ZIP is missing."
             exit 1
           fi
 
+          # Mandatory report.
           if [ ! -s "$REPORT" ]; then
             echo "ERROR: Validation report is missing."
             exit 1
           fi
 
+          # If Android was detected, both APKs MUST exist.
           if [ "${{ steps.android.outputs.android_available }}" = "true" ]; then
 
-            if [ ! -s "$ARTIFACT_DIR/android-debug/A227C-debug.apk" ]; then
-              echo "ERROR: Android project was detected but Debug APK is missing."
+            if [ ! -s "$ARTIFACT_DIR/android/A227C-debug.apk" ]; then
+              echo "ERROR: Android was detected but Debug APK is missing."
               exit 1
             fi
 
-            if [ ! -s "$ARTIFACT_DIR/android-release/A227C-release.apk" ]; then
-              echo "ERROR: Android project was detected but Release APK is missing."
+            if [ ! -s "$ARTIFACT_DIR/android/A227C-release.apk" ]; then
+              echo "ERROR: Android was detected but Release APK is missing."
               exit 1
             fi
 
-            echo "Android artifacts verified."
+            echo "Android Debug APK: VERIFIED"
+            echo "Android Release APK: VERIFIED"
+
           else
-            echo "Android artifacts not expected because no Android project exists."
+
+            echo "Android application: NOT PRESENT IN CURRENT SOURCE"
+            echo "No APK is being falsely claimed."
+
           fi
 
           echo ""
-          echo "Mandatory artifacts verified."
+          echo "ALL EXPECTED ARTIFACTS VERIFIED."
 
       # ============================================================
-      # 21. UPLOAD COMPLETE ARTIFACT SET
+      # 20. UPLOAD ARTIFACTS
       # ============================================================
       - name: Upload A227C artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: A227C-BUILD-${{ github.run_number }}
-          path: |
-            a227c-artifacts/**
+          path: ${{ github.workspace }}/a227c-artifacts
           if-no-files-found: error
           retention-days: 30
 
       # ============================================================
-      # 22. FINAL STATUS
+      # 21. FINAL SUCCESS
       # ============================================================
-      - name: Final A227C status
+      - name: Final success
         shell: bash
         run: |
           set -euo pipefail
 
           echo ""
           echo "============================================================"
-          echo "A227C BUILD COMPLETED"
+          echo "A227C BUILD SUCCESS"
           echo "============================================================"
           echo ""
           echo "Backend validation: PASSED"
-          echo "Python compilation: PASSED"
+          echo "Compilation: PASSED"
           echo "Tests: PASSED"
-          echo "Source ZIP: PRODUCED"
-          echo "Artifacts: UPLOADED"
+          echo "Complete source ZIP: VERIFIED"
+          echo "Validation report: VERIFIED"
+          echo "GitHub artifact upload: COMPLETED"
 
           if [ "${{ steps.android.outputs.android_available }}" = "true" ]; then
-            echo "Android application: DETECTED"
-            echo "Debug APK: PRODUCED"
-            echo "Release APK: PRODUCED"
+            echo "Debug APK: VERIFIED"
+            echo "Release APK: VERIFIED"
           else
-            echo "Android application: NOT PRESENT IN SOURCE"
-            echo "APK build: NOT CLAIMED"
+            echo "Android APK: NOT APPLICABLE — NO ANDROID MODULE IN SOURCE"
           fi
-
-          echo ""
-          echo "This workflow does NOT claim an APK exists unless"
-          echo "the APK was physically produced and verified."
