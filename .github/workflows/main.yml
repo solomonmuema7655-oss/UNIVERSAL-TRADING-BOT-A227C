@@ -28,37 +28,36 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
+      # ================================================
       # 1. CHECKOUT
-      # --------------------------------------------------
+      # ================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # --------------------------------------------------
+      # ================================================
       # 2. INITIALIZE DIRECTORIES
-      # --------------------------------------------------
+      # ================================================
 
       - name: Initialize build directories
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$ARTIFACT_DIR"
-          mkdir -p "$SOURCE_DIR"
           mkdir -p "$ARTIFACT_DIR/source"
           mkdir -p "$ARTIFACT_DIR/reports"
           mkdir -p "$ARTIFACT_DIR/android"
+          mkdir -p "$SOURCE_DIR"
 
           echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Artifact directory: $ARTIFACT_DIR"
-          echo "Source directory: $SOURCE_DIR"
+          echo "Artifacts: $ARTIFACT_DIR"
+          echo "Source extraction: $SOURCE_DIR"
 
-      # --------------------------------------------------
+      # ================================================
       # 3. LOCATE AND EXTRACT A227C SOURCE
-      # --------------------------------------------------
+      # ================================================
 
       - name: Locate and extract A227C source
         id: source
@@ -74,7 +73,7 @@ jobs:
 
           PROJECT_DIR=""
 
-          # Search for an already-extracted project.
+          # Check for an already-extracted project.
           while IFS= read -r -d '' file; do
             PROJECT_DIR="${file%/backend/a227c/core/indicators.py}"
             break
@@ -88,7 +87,7 @@ jobs:
               -print0
           )
 
-          # If not found, search ZIP archives by their contents.
+          # If not extracted, inspect ZIP archives.
           if [ -z "$PROJECT_DIR" ]; then
 
             MATCHES=()
@@ -115,16 +114,16 @@ jobs:
             )
 
             if [ "${#MATCHES[@]}" -eq 0 ]; then
-              echo "ERROR: No A227C source ZIP was found."
-              echo "Required archive content:"
+              echo "ERROR: No valid A227C source ZIP was found."
+              echo "Required file:"
               echo "backend/a227c/core/indicators.py"
               exit 1
             fi
 
             if [ "${#MATCHES[@]}" -gt 1 ]; then
-              echo "ERROR: Multiple A227C source archives found."
+              echo "ERROR: Multiple A227C source ZIPs were found."
               printf '%s\n' "${MATCHES[@]}"
-              echo "Keep only the intended source archive in the repository."
+              echo "Keep only the intended source archive."
               exit 1
             fi
 
@@ -140,10 +139,7 @@ jobs:
 
             echo "Source archive extracted."
 
-            # IMPORTANT:
-            # Derive the project root from the actual module path.
-            # Do not use a fixed number of dirname operations.
-
+            # Derive project root from the actual file path.
             while IFS= read -r -d '' file; do
               PROJECT_DIR="${file%/backend/a227c/core/indicators.py}"
               break
@@ -155,20 +151,20 @@ jobs:
             )
           fi
 
-          # Validate the derived project root.
+          # Validate project root.
           if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
             echo "ERROR: A227C project root could not be located."
             exit 1
           fi
 
           if [ ! -f "$PROJECT_DIR/backend/a227c/core/indicators.py" ]; then
-            echo "ERROR: Required indicators module is missing."
-            echo "Detected directory: $PROJECT_DIR"
+            echo "ERROR: A227C indicators module is missing."
+            echo "Detected path: $PROJECT_DIR"
             exit 1
           fi
 
           if [ ! -d "$PROJECT_DIR/backend/a227c" ]; then
-            echo "ERROR: A227C Python package directory is missing."
+            echo "ERROR: A227C package directory is missing."
             exit 1
           fi
 
@@ -183,11 +179,9 @@ jobs:
           echo "PYTHONPATH=$PROJECT_DIR/backend" >> "$GITHUB_ENV"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo "A227C source discovery completed."
-
-      # --------------------------------------------------
-      # 4. PACKAGE SOURCE BEFORE VALIDATION
-      # --------------------------------------------------
+      # ================================================
+      # 4. PACKAGE SOURCE
+      # ================================================
 
       - name: Package A227C source
         id: package
@@ -199,11 +193,11 @@ jobs:
 
           OUTPUT="$ARTIFACT_DIR/source/UNIVERSAL-TRADING-BOT-A227C-COMPLETE-SOURCE.zip"
 
-          echo "Packaging A227C project..."
-          echo "Project directory: $PROJECT_DIR"
-
           mkdir -p "$(dirname "$OUTPUT")"
           rm -f "$OUTPUT"
+
+          echo "Packaging project:"
+          echo "$PROJECT_DIR"
 
           zip -qr "$OUTPUT" . \
             -x "./.git/*" \
@@ -220,27 +214,26 @@ jobs:
             exit 1
           fi
 
-          echo "Verifying source ZIP..."
+          echo "Checking ZIP integrity..."
           unzip -tq "$OUTPUT"
 
-          echo "Source ZIP successfully created:"
+          echo "Source ZIP created:"
           ls -lh "$OUTPUT"
 
           echo "package_ready=true" >> "$GITHUB_OUTPUT"
 
-      # --------------------------------------------------
+      # ================================================
       # 5. SET UP PYTHON
-      # --------------------------------------------------
+      # ================================================
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
-      # --------------------------------------------------
-      # 6. INSTALL BACKEND DEPENDENCIES
-      # --------------------------------------------------
+      # ================================================
+      # 6. INSTALL DEPENDENCIES
+      # ================================================
 
       - name: Install A227C Python dependencies
         id: dependencies
@@ -250,16 +243,11 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "Upgrading Python packaging tools..."
-
           python -m pip install --upgrade pip setuptools wheel
 
-          # Install NumPy before importing A227C indicators.
-          echo "Installing NumPy..."
-
+          # NumPy must be installed before importing indicators.
           python -m pip install numpy
 
-          # Install declared requirements when available.
           REQUIREMENTS_FILES=(
             "$PROJECT_DIR/backend/requirements.txt"
             "$PROJECT_DIR/requirements.txt"
@@ -269,35 +257,29 @@ jobs:
 
           for REQUIREMENTS in "${REQUIREMENTS_FILES[@]}"; do
             if [ -f "$REQUIREMENTS" ]; then
-              echo "Installing: $REQUIREMENTS"
+              echo "Installing $REQUIREMENTS"
               python -m pip install -r "$REQUIREMENTS"
             fi
           done
 
-          # Install the project if it declares a package.
           if [ -f "$PROJECT_DIR/backend/pyproject.toml" ]; then
-            echo "Installing backend package..."
             python -m pip install -e "$PROJECT_DIR/backend"
 
           elif [ -f "$PROJECT_DIR/pyproject.toml" ]; then
-            echo "Installing project package..."
             python -m pip install -e "$PROJECT_DIR"
           fi
 
-          # Install test dependencies.
           python -m pip install pytest pytest-asyncio httpx
 
-          echo "Verifying NumPy..."
           python -c "import numpy; print('NumPy:', numpy.__version__)"
 
-          echo "Checking dependency consistency..."
           python -m pip check
 
-          echo "Python dependency installation completed."
+          echo "Python dependencies installed."
 
-      # --------------------------------------------------
-      # 7. VERIFY A227C IMPORTS
-      # --------------------------------------------------
+      # ================================================
+      # 7. VERIFY IMPORTS
+      # ================================================
 
       - name: Verify A227C imports
         id: imports
@@ -307,20 +289,16 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "Checking A227C package..."
           python -c "import a227c"
-
-          echo "Checking indicators..."
           python -c "import a227c.core.indicators"
 
-          echo "Checking NumPy integration..."
           python -c "import numpy as np; print(np.array([1, 2, 3]))"
 
           echo "A227C imports verified successfully."
 
-      # --------------------------------------------------
-      # 8. COMPILE PYTHON SOURCE
-      # --------------------------------------------------
+      # ================================================
+      # 8. COMPILE PYTHON
+      # ================================================
 
       - name: Compile A227C Python source
         id: compile
@@ -332,11 +310,11 @@ jobs:
 
           python -m compileall -q backend/a227c
 
-          echo "A227C Python compilation completed."
+          echo "Python compilation successful."
 
-      # --------------------------------------------------
-      # 9. RUN AUTOMATED TESTS
-      # --------------------------------------------------
+      # ================================================
+      # 9. RUN TESTS
+      # ================================================
 
       - name: Run A227C automated tests
         id: tests
@@ -346,41 +324,28 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          if [ -d tests ]; then
-            echo "Running root tests..."
-            python -m pytest -v tests
+          mapfile -t TEST_FILES < <(
+            find . \
+              -path './.git' -prune -o \
+              -path './.venv' -prune -o \
+              -path './venv' -prune -o \
+              -path '*/__pycache__' -prune -o \
+              -type f \
+              \( -name 'test_*.py' -o -name '*_test.py' \) \
+              -print
+          )
 
-          elif [ -d backend/tests ]; then
-            echo "Running backend tests..."
-            python -m pytest -v backend/tests
-
+          if [ "${#TEST_FILES[@]}" -gt 0 ]; then
+            echo "Found ${#TEST_FILES[@]} test files."
+            python -m pytest -v "${TEST_FILES[@]}"
           else
-            echo "Searching for Python test files..."
-
-            mapfile -t TEST_FILES < <(
-              find . \
-                -path './.git' -prune -o \
-                -path './.venv' -prune -o \
-                -path './venv' -prune -o \
-                -path '*/__pycache__' -prune -o \
-                -type f \
-                \( -name 'test_*.py' -o -name '*_test.py' \) \
-                -print
-            )
-
-            if [ "${#TEST_FILES[@]}" -gt 0 ]; then
-              python -m pytest -v
-            else
-              echo "WARNING: No Python test files were found."
-              echo "No automated test suite was executed."
-            fi
+            echo "WARNING: No automated Python test files found."
+            echo "No test suite was executed."
           fi
 
-          echo "Automated test step completed."
-
-      # --------------------------------------------------
-      # 10. DETECT ANDROID APPLICATION
-      # --------------------------------------------------
+      # ================================================
+      # 10. DETECT A COMPLETE ANDROID PROJECT
+      # ================================================
 
       - name: Detect Android application
         id: android
@@ -388,14 +353,53 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Searching for Android Gradle application..."
+          echo "Searching for a complete Android Gradle project..."
 
           APP_GRADLE=""
+          ANDROID_ROOT=""
 
+          # Search app Gradle files.
           while IFS= read -r -d '' candidate; do
 
-            if grep -Eq 'com\.android\.application' "$candidate"; then
-              APP_GRADLE="$candidate"
+            if ! grep -Eq \
+              'com\.android\.application|libs\.plugins\.android\.application|alias[[:space:]]*\([[:space:]]*libs\.plugins\.android\.application' \
+              "$candidate"; then
+              continue
+            fi
+
+            echo "Android application candidate:"
+            echo "$candidate"
+
+            # Walk upwards, including PROJECT_DIR itself.
+            current="$(dirname "$candidate")"
+
+            while :; do
+
+              if [ -f "$current/settings.gradle" ] ||
+                 [ -f "$current/settings.gradle.kts" ]; then
+
+                APP_GRADLE="$candidate"
+                ANDROID_ROOT="$current"
+                break
+              fi
+
+              if [ "$current" = "$PROJECT_DIR" ] ||
+                 [ "$current" = "/" ]; then
+                break
+              fi
+
+              case "$current/" in
+                "$PROJECT_DIR/"*)
+                  current="$(dirname "$current")"
+                  ;;
+                *)
+                  break
+                  ;;
+              esac
+
+            done
+
+            if [ -n "$ANDROID_ROOT" ]; then
               break
             fi
 
@@ -409,30 +413,32 @@ jobs:
               -print0
           )
 
-          if [ -z "$APP_GRADLE" ]; then
-            echo "No Android application module detected."
-            echo "This source package may contain backend components only."
+          if [ -z "$APP_GRADLE" ] || [ -z "$ANDROID_ROOT" ]; then
+
+            echo "No complete Android Gradle application was detected."
+            echo "A Gradle module without a matching settings file"
+            echo "cannot be treated as a buildable Android project."
+
             echo "android_available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          ANDROID_ROOT="$(dirname "$(dirname "$APP_GRADLE")")"
+          echo "========================================"
+          echo "VALID ANDROID PROJECT DETECTED"
+          echo "========================================"
 
-          if [ ! -f "$ANDROID_ROOT/settings.gradle" ] &&
-             [ ! -f "$ANDROID_ROOT/settings.gradle.kts" ]; then
-            echo "ERROR: Android settings file is missing."
-            exit 1
-          fi
+          echo "Application module:"
+          echo "$APP_GRADLE"
 
-          echo "Android module: $APP_GRADLE"
-          echo "Android project root: $ANDROID_ROOT"
+          echo "Android project root:"
+          echo "$ANDROID_ROOT"
 
           echo "ANDROID_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
           echo "android_available=true" >> "$GITHUB_OUTPUT"
 
-      # --------------------------------------------------
-      # 11. SET UP JAVA 17
-      # --------------------------------------------------
+      # ================================================
+      # 11. JAVA 17
+      # ================================================
 
       - name: Set up Java 17
         if: steps.android.outputs.android_available == 'true'
@@ -441,17 +447,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # --------------------------------------------------
-      # 12. SET UP ANDROID SDK
-      # --------------------------------------------------
+      # ================================================
+      # 12. ANDROID SDK
+      # ================================================
 
       - name: Set up Android SDK
         if: steps.android.outputs.android_available == 'true'
         uses: android-actions/setup-android@v3
 
-      # --------------------------------------------------
-      # 13. SET UP GRADLE 8.7
-      # --------------------------------------------------
+      # ================================================
+      # 13. GRADLE 8.7
+      # ================================================
 
       - name: Set up Gradle 8.7
         if: steps.android.outputs.android_available == 'true'
@@ -459,9 +465,9 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      # --------------------------------------------------
+      # ================================================
       # 14. BUILD DEBUG AND RELEASE APK
-      # --------------------------------------------------
+      # ================================================
 
       - name: Build Android Debug and Release APK
         id: android_build
@@ -472,13 +478,11 @@ jobs:
 
           cd "$ANDROID_ROOT"
 
-          echo "Java version:"
+          echo "Java:"
           java -version
 
-          echo "Gradle version:"
+          echo "Gradle:"
           gradle --version
-
-          echo "Building Android application..."
 
           gradle \
             --no-daemon \
@@ -486,8 +490,6 @@ jobs:
             clean \
             assembleDebug \
             assembleRelease
-
-          echo "Searching for APK outputs..."
 
           mapfile -t APK_FILES < <(
             find "$ANDROID_ROOT" \
@@ -505,7 +507,8 @@ jobs:
           RELEASE_FOUND=false
 
           for APK in "${APK_FILES[@]}"; do
-            echo "Generated APK: $APK"
+
+            echo "APK: $APK"
 
             case "$APK" in
               *debug*.apk)
@@ -517,23 +520,24 @@ jobs:
                 RELEASE_FOUND=true
                 ;;
             esac
+
           done
 
           if [ "$DEBUG_FOUND" != true ]; then
-            echo "ERROR: Debug APK was not generated."
+            echo "ERROR: Debug APK missing."
             exit 1
           fi
 
           if [ "$RELEASE_FOUND" != true ]; then
-            echo "ERROR: Release APK was not generated."
+            echo "ERROR: Release APK missing."
             exit 1
           fi
 
           echo "Debug and Release APKs generated."
 
-      # --------------------------------------------------
-      # 15. GENERATE BUILD REPORT
-      # --------------------------------------------------
+      # ================================================
+      # 15. BUILD REPORT
+      # ================================================
 
       - name: Generate A227C build report
         if: always()
@@ -568,15 +572,13 @@ jobs:
             echo "Dependencies: ${DEPENDENCY_RESULT:-not completed}"
             echo "Imports: ${IMPORT_RESULT:-not completed}"
             echo "Compilation: ${COMPILE_RESULT:-not completed}"
-            echo "Automated tests: ${TEST_RESULT:-not completed}"
+            echo "Tests: ${TEST_RESULT:-not completed}"
             echo "Android detected: ${ANDROID_AVAILABLE:-unknown}"
             echo "Android build: ${ANDROID_RESULT:-not executed}"
             echo
-            echo "IMPORTANT:"
-            echo "A successful source package does not establish"
-            echo "that external market-data providers are connected."
-            echo "It does not establish live market access,"
-            echo "deployment, or physical-device acceptance."
+            echo "A successful source package is not proof of"
+            echo "live market-data provider connectivity."
+            echo "It does not establish deployment or device acceptance."
             echo
             echo "A227C is a signal-analysis application."
             echo "It does not execute broker trades."
@@ -584,22 +586,15 @@ jobs:
 
           cat "$REPORT"
 
-      # --------------------------------------------------
-      # 16. VERIFY ARTIFACTS
-      # --------------------------------------------------
+      # ================================================
+      # 16. VERIFY SOURCE ARTIFACT
+      # ================================================
 
-      - name: Verify generated artifacts
-        if: always()
+      - name: Verify generated source artifact
+        if: always() && steps.package.outputs.package_ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Available A227C artifacts:"
-
-          find "$ARTIFACT_DIR" \
-            -maxdepth 5 \
-            -type f \
-            -printf '%p (%s bytes)\n'
 
           SOURCE_ZIP="$ARTIFACT_DIR/source/UNIVERSAL-TRADING-BOT-A227C-COMPLETE-SOURCE.zip"
 
@@ -608,14 +603,14 @@ jobs:
             exit 1
           fi
 
-          echo "Checking source ZIP integrity..."
           unzip -tq "$SOURCE_ZIP"
 
-          echo "Source artifact verified."
+          echo "Source ZIP integrity verified."
+          ls -lh "$SOURCE_ZIP"
 
-      # --------------------------------------------------
+      # ================================================
       # 17. UPLOAD ARTIFACTS
-      # --------------------------------------------------
+      # ================================================
 
       - name: Upload A227C build artifacts
         if: always() && steps.package.outputs.package_ready == 'true'
@@ -627,9 +622,9 @@ jobs:
           compression-level: 6
           retention-days: 30
 
-      # --------------------------------------------------
+      # ================================================
       # 18. FINAL STATUS
-      # --------------------------------------------------
+      # ================================================
 
       - name: Final build status
         if: always()
@@ -642,5 +637,5 @@ jobs:
           echo "BUILD PROCESS FINISHED"
           echo "========================================"
           echo "Job status: $JOB_STATUS"
-          echo "Artifacts: $ARTIFACT_DIR"
+          echo "Artifact directory: $ARTIFACT_DIR"
           
