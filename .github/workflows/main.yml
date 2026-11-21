@@ -1,3 +1,4 @@
+
 name: Build UNIVERSAL-TRADING-BOT-A227C APKs
 
 on:
@@ -87,115 +88,114 @@ jobs:
 
 
       # ============================================================
-      # 6. LOCATE AND EXTRACT REPAIRED A227C ZIP
+      # 6. LOCATE AND EXTRACT THE A227C ZIP
+      # IMPORTANT: ALWAYS BUILD FROM THE EXTRACTED ZIP
       # ============================================================
-      - name: Locate and extract A227C project
+      - name: Extract and select repaired A227C project
         shell: bash
         run: |
           set -euo pipefail
 
           WORKSPACE="$GITHUB_WORKSPACE"
           EXTRACT_DIR="$WORKSPACE/a227c-extracted"
+
+          echo "Searching for A227C source archive..."
+
+          mapfile -t ZIP_FILES < <(
+            find "$WORKSPACE" \
+              -type d \( \
+                -name .git \
+                -o -name .gradle \
+                -o -name build \
+                -o -name a227c-extracted \
+              \) -prune \
+              -o \
+              -type f \( \
+                -name 'UNIVERSAL-TRADING-BOT-A227C-FINAL-BUILD.zip' \
+                -o \
+                -name 'UNIVERSAL-TRADING-BOT-A227C-READY-TO-UPLOAD.zip' \
+              \) \
+              -print | sort
+          )
+
+          if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
+            echo "ERROR: No A227C source ZIP found."
+            echo "Upload the repaired A227C ZIP into the repository."
+
+            find "$WORKSPACE" \
+              -maxdepth 5 \
+              -type f \
+              -print
+
+            exit 1
+          fi
+
+          if [ "${#ZIP_FILES[@]}" -gt 1 ]; then
+            echo "ERROR: Multiple A227C ZIP archives found."
+            printf '%s\n' "${ZIP_FILES[@]}"
+            echo "Keep only one authoritative A227C archive."
+            exit 1
+          fi
+
+          ZIP_FILE="${ZIP_FILES[0]}"
+
+          echo "Selected archive:"
+          echo "$ZIP_FILE"
+
+          echo "Checking ZIP integrity..."
+          unzip -t "$ZIP_FILE"
+
+          echo "Preparing clean extraction directory..."
+          rm -rf "$EXTRACT_DIR"
+          mkdir -p "$EXTRACT_DIR"
+
+          echo "Extracting A227C source..."
+          unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+          echo "Searching ONLY inside the extracted archive..."
+
           PROJECT_DIR=""
 
-          find_project() {
-            local SEARCH_DIR="$1"
+          while IFS= read -r SETTINGS; do
 
-            while IFS= read -r SETTINGS; do
+            DIR="$(dirname "$SETTINGS")"
 
-              local DIR
-              DIR="$(dirname "$SETTINGS")"
+            if [ -f "$DIR/android/app/build.gradle.kts" ] || \
+               [ -f "$DIR/android/app/build.gradle" ]; then
 
-              if [ -f "$DIR/android/app/build.gradle.kts" ] || \
-                 [ -f "$DIR/android/app/build.gradle" ]; then
+              PROJECT_DIR="$DIR"
+              break
 
-                PROJECT_DIR="$DIR"
-                return 0
+            fi
 
-              fi
+          done < <(
+            find "$EXTRACT_DIR" \
+              -type f \( \
+                -name settings.gradle.kts \
+                -o -name settings.gradle \
+              \) \
+              -print
+          )
 
-            done < <(
-              find "$SEARCH_DIR" \
-                -type d \( \
-                  -name .git \
-                  -o -name .gradle \
-                  -o -name build \
-                \) -prune \
-                -o \
-                -type f \( \
-                  -name settings.gradle.kts \
-                  -o -name settings.gradle \
-                \) \
-                -print
-            )
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android Gradle project not found inside ZIP."
 
-            return 1
-          }
-
-          echo "Searching for A227C project..."
-
-          if ! find_project "$WORKSPACE"; then
-
-            echo "Searching for repaired A227C ZIP..."
-
-            ZIP_FILE="$(find "$WORKSPACE" \
+            find "$EXTRACT_DIR" \
+              -maxdepth 8 \
               -type f \
-              -name 'UNIVERSAL-TRADING-BOT-A227C-FINAL-BUILD.zip' \
-              ! -path '*/.git/*' \
-              -print -quit || true)"
+              -print
 
-            if [ -z "$ZIP_FILE" ]; then
-
-              echo "ERROR: Expected A227C ZIP not found."
-
-              find "$WORKSPACE" \
-                -maxdepth 5 \
-                -type f \
-                -print
-
-              exit 1
-
-            fi
-
-            echo "Selected ZIP:"
-            echo "$ZIP_FILE"
-
-            echo "Checking ZIP integrity..."
-
-            unzip -t "$ZIP_FILE"
-
-            rm -rf "$EXTRACT_DIR"
-            mkdir -p "$EXTRACT_DIR"
-
-            echo "Extracting A227C..."
-
-            unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
-
-            if ! find_project "$EXTRACT_DIR"; then
-
-              echo "ERROR: A227C Gradle project not found."
-
-              find "$EXTRACT_DIR" \
-                -maxdepth 8 \
-                -type f \
-                -print
-
-              exit 1
-
-            fi
-
+            exit 1
           fi
 
           PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
-          echo "BUILD_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo ""
           echo "=============================================="
-          echo "A227C PROJECT ROOT FOUND"
-          echo "=============================================="
+          echo "SELECTED A227C PROJECT"
           echo "$PROJECT_DIR"
           echo "=============================================="
+
+          echo "BUILD_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
 
       # ============================================================
@@ -208,14 +208,10 @@ jobs:
 
           cd "$BUILD_DIR"
 
-          SETTINGS=""
+          SETTINGS="settings.gradle.kts"
 
-          if [ -f settings.gradle.kts ]; then
-            SETTINGS="settings.gradle.kts"
-          elif [ -f settings.gradle ]; then
-            SETTINGS="settings.gradle"
-          else
-            echo "ERROR: Root settings file missing."
+          if [ ! -f "$SETTINGS" ]; then
+            echo "ERROR: Kotlin settings.gradle.kts missing."
             exit 1
           fi
 
@@ -231,38 +227,33 @@ jobs:
             exit 1
           fi
 
-          if [ "$SETTINGS" = "settings.gradle.kts" ]; then
+          if ! grep -Fq \
+            'rootProject.name = "UNIVERSAL-TRADING-BOT-A227C"' \
+            "$SETTINGS"; then
 
-            if ! grep -Fq \
-              'rootProject.name = "UNIVERSAL-TRADING-BOT-A227C"' \
-              "$SETTINGS"; then
-
-              echo "ERROR: Kotlin project name configuration is incorrect."
-              cat "$SETTINGS"
-              exit 1
-
-            fi
-
-            if ! grep -Fq 'include(":android:app")' "$SETTINGS"; then
-
-              echo "ERROR: Android module include declaration is incorrect."
-              cat "$SETTINGS"
-              exit 1
-
-            fi
+            echo "ERROR: Kotlin project name configuration is incorrect."
+            cat "$SETTINGS"
+            exit 1
 
           fi
 
-          echo "Gradle root:"
-          pwd
+          if ! grep -Fq \
+            'include(":android:app")' \
+            "$SETTINGS"; then
 
-          echo "Settings file:"
+            echo "ERROR: Android module include declaration is incorrect."
+            cat "$SETTINGS"
+            exit 1
+
+          fi
+
+          echo "Root Gradle settings:"
           cat "$SETTINGS"
 
           echo "Android module:"
           ls -la android/app
 
-          echo "A227C Gradle structure verified."
+          echo "SUCCESS: A227C Gradle structure verified."
 
 
       # ============================================================
@@ -277,17 +268,20 @@ jobs:
 
           test -f android/app/src/main/AndroidManifest.xml
 
-          if ! find android/app/src/main \
-            -type f \
-            \( -name '*.kt' -o -name '*.java' \) \
-            -print -quit | grep -q .; then
+          SOURCE_COUNT="$(
+            find android/app/src/main \
+              -type f \
+              \( -name '*.kt' -o -name '*.java' \) \
+              | wc -l
+          )"
 
+          if [ "$SOURCE_COUNT" -eq 0 ]; then
             echo "ERROR: Android source files missing."
             exit 1
-
           fi
 
           echo "Android manifest verified."
+          echo "Android source files found: $SOURCE_COUNT"
 
           find android/app/src/main \
             -type f \
@@ -308,7 +302,6 @@ jobs:
           LOGO="android/app/src/main/res/drawable-nodpi/a227c_logo.png"
 
           if [ ! -s "$LOGO" ]; then
-
             echo "ERROR: Official A227C logo missing."
 
             find android/app/src/main/res \
@@ -316,11 +309,9 @@ jobs:
               -print
 
             exit 1
-
           fi
 
           echo "Official A227C logo verified."
-
           ls -lh "$LOGO"
 
 
@@ -337,7 +328,7 @@ jobs:
 
       # ============================================================
       # 11. CLEAN PROJECT
-      # IMPORTANT: RUN FROM ROOT GRADLE PROJECT
+      # RUN FROM ROOT GRADLE PROJECT
       # ============================================================
       - name: Clean A227C Android project
         shell: bash
@@ -378,25 +369,28 @@ jobs:
 
           APK_DIR="$BUILD_DIR/android/app/build/outputs/apk/debug"
 
-          APK="$(find "$APK_DIR" \
-            -type f \
-            -name '*.apk' \
-            -print -quit 2>/dev/null || true)"
-
-          if [ -z "$APK" ]; then
-
-            echo "ERROR: Debug APK not generated."
-
-            find "$BUILD_DIR/android/app/build/outputs" \
-              -type f \
-              -print 2>/dev/null || true
-
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: Debug APK output directory missing."
             exit 1
+          fi
 
+          mapfile -t APKS < <(
+            find "$APK_DIR" \
+              -type f \
+              -name '*.apk' \
+              -print
+          )
+
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "ERROR: Debug APK not generated."
+            exit 1
           fi
 
           echo "A227C DEBUG APK GENERATED"
-          ls -lh "$APK"
+
+          printf '%s\n' "${APKS[@]}"
+
+          ls -lh "${APKS[@]}"
 
 
       # ============================================================
@@ -437,25 +431,28 @@ jobs:
 
           APK_DIR="$BUILD_DIR/android/app/build/outputs/apk/release"
 
-          APK="$(find "$APK_DIR" \
-            -type f \
-            -name '*.apk' \
-            -print -quit 2>/dev/null || true)"
-
-          if [ -z "$APK" ]; then
-
-            echo "ERROR: Release APK not generated."
-
-            find "$BUILD_DIR/android/app/build/outputs" \
-              -type f \
-              -print 2>/dev/null || true
-
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: Release APK output directory missing."
             exit 1
+          fi
 
+          mapfile -t APKS < <(
+            find "$APK_DIR" \
+              -type f \
+              -name '*.apk' \
+              -print
+          )
+
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "ERROR: Release APK not generated."
+            exit 1
           fi
 
           echo "A227C RELEASE APK GENERATED"
-          ls -lh "$APK"
+
+          printf '%s\n' "${APKS[@]}"
+
+          ls -lh "${APKS[@]}"
 
 
       # ============================================================
@@ -490,3 +487,4 @@ jobs:
           echo "Official A227C branding: VERIFIED"
           echo "Gradle root: VERIFIED"
           echo "======================================================"
+          
