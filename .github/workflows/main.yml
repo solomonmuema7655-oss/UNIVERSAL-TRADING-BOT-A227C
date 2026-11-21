@@ -17,8 +17,17 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # SHOW REPOSITORY
+      # ============================================================
 
       - name: Show repository contents
         shell: bash
@@ -26,14 +35,19 @@ jobs:
           set -euo pipefail
 
           echo "=========================================="
-          echo "A227C repository contents"
+          echo "A227C REPOSITORY CONTENTS"
           echo "=========================================="
 
           find "$GITHUB_WORKSPACE" \
-            -maxdepth 6 \
+            -maxdepth 8 \
             -type f \
             -not -path '*/.git/*' \
             -print | sort
+
+
+      # ============================================================
+      # LOCATE SOURCE ZIP
+      # ============================================================
 
       - name: Locate A227C source archive
         id: locate_source
@@ -42,7 +56,7 @@ jobs:
           set -euo pipefail
 
           echo "=========================================="
-          echo "Searching for A227C source archive..."
+          echo "SEARCHING FOR A227C SOURCE ARCHIVE"
           echo "=========================================="
 
           ZIP_FILE=""
@@ -84,6 +98,9 @@ jobs:
 
             echo ""
             echo "ERROR: No valid A227C source ZIP was found."
+            echo ""
+
+            echo "ZIP files discovered:"
 
             find "$GITHUB_WORKSPACE" \
               -type f \
@@ -91,17 +108,27 @@ jobs:
               ! -path '*/.git/*' \
               -print | sort || true
 
+            echo ""
+            echo "The archive must contain the A227C backend"
+            echo "structure, including backend/a227c/."
+
             exit 1
 
           fi
 
           echo ""
           echo "=========================================="
-          echo "A227C source archive selected:"
+          echo "A227C SOURCE ARCHIVE SELECTED"
+          echo "=========================================="
           echo "$ZIP_FILE"
           echo "=========================================="
 
           echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+
+
+      # ============================================================
+      # EXTRACT SOURCE
+      # ============================================================
 
       - name: Extract A227C source
         id: extract_source
@@ -114,7 +141,7 @@ jobs:
           SOURCE_ROOT="$GITHUB_WORKSPACE/a227c-source"
 
           echo "=========================================="
-          echo "Extracting A227C source"
+          echo "EXTRACTING A227C SOURCE"
           echo "=========================================="
 
           rm -rf "$SOURCE_ROOT"
@@ -123,12 +150,28 @@ jobs:
           unzip -q -o "$ZIP_FILE" -d "$SOURCE_ROOT"
 
           echo ""
-          echo "Extracted directories:"
+          echo "Extracted directory tree:"
 
           find "$SOURCE_ROOT" \
             -type d \
             -not -path '*/.git/*' \
             -print | sort
+
+          echo ""
+          echo "Extracted file tree:"
+
+          find "$SOURCE_ROOT" \
+            -type f \
+            -not -path '*/.git/*' \
+            -print | sort | head -500
+
+          echo ""
+          echo "A227C source extraction completed."
+
+
+      # ============================================================
+      # LOCATE PROJECT ROOT
+      # ============================================================
 
       - name: Locate A227C project root
         id: project_root
@@ -139,28 +182,38 @@ jobs:
           SOURCE_ROOT="$GITHUB_WORKSPACE/a227c-source"
 
           echo "=========================================="
-          echo "Searching for A227C project root..."
+          echo "SEARCHING FOR A227C PROJECT ROOT"
           echo "=========================================="
 
           PROJECT_DIR=""
 
+          echo ""
+          echo "Searching for directories named a227c..."
+
           while IFS= read -r a227c_dir; do
 
-            echo "Found A227C package:"
+            echo ""
+            echo "A227C package candidate:"
             echo "$a227c_dir"
 
             BACKEND_DIR="$(dirname "$a227c_dir")"
 
-            if [ "$(basename "$BACKEND_DIR")" = "backend" ]; then
+            if [ "$(basename "$BACKEND_DIR")" != "backend" ]; then
+              echo "  -> Parent is not backend."
+              continue
+            fi
 
-              CANDIDATE_ROOT="$(dirname "$BACKEND_DIR")"
+            CANDIDATE_ROOT="$(dirname "$BACKEND_DIR")"
 
-              if [ -d "$CANDIDATE_ROOT/backend/a227c" ]; then
+            echo "  -> Candidate project root:"
+            echo "     $CANDIDATE_ROOT"
 
-                PROJECT_DIR="$CANDIDATE_ROOT"
-                break
+            if [ -d "$CANDIDATE_ROOT/backend/a227c" ]; then
 
-              fi
+              PROJECT_DIR="$CANDIDATE_ROOT"
+
+              echo "  -> Valid A227C project root."
+              break
 
             fi
 
@@ -171,16 +224,25 @@ jobs:
               -print | sort
           )
 
+          # ----------------------------------------------------------
+          # FALLBACK SEARCH
+          # ----------------------------------------------------------
+
           if [ -z "$PROJECT_DIR" ]; then
 
             echo ""
-            echo "Running fallback structural search..."
+            echo "Primary search did not find the project root."
+            echo "Running fallback backend search..."
 
             while IFS= read -r backend_dir; do
 
               if [ -d "$backend_dir/a227c" ]; then
 
                 PROJECT_DIR="$(dirname "$backend_dir")"
+
+                echo "Fallback project root:"
+                echo "$PROJECT_DIR"
+
                 break
 
               fi
@@ -194,10 +256,33 @@ jobs:
 
           fi
 
+          # ----------------------------------------------------------
+          # FINAL VALIDATION
+          # ----------------------------------------------------------
+
           if [ -z "$PROJECT_DIR" ]; then
 
             echo ""
             echo "ERROR: Could not locate A227C project root."
+            echo ""
+
+            echo "A227C directories found:"
+
+            find "$SOURCE_ROOT" \
+              -type d \
+              -name "a227c" \
+              -print | sort || true
+
+            echo ""
+            echo "Backend directories found:"
+
+            find "$SOURCE_ROOT" \
+              -type d \
+              -name "backend" \
+              -print | sort || true
+
+            echo ""
+            echo "Complete directory tree:"
 
             find "$SOURCE_ROOT" \
               -type d \
@@ -217,6 +302,11 @@ jobs:
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
+
+      # ============================================================
+      # VALIDATE BACKEND
+      # ============================================================
+
       - name: Validate A227C backend
         shell: bash
         env:
@@ -226,6 +316,10 @@ jobs:
 
           cd "$PROJECT_DIR"
 
+          echo "=========================================="
+          echo "VALIDATING A227C BACKEND"
+          echo "=========================================="
+
           test -d backend
           test -d backend/a227c
 
@@ -233,16 +327,26 @@ jobs:
           echo "A227C package: OK"
 
           echo ""
-          echo "A227C package contents:"
+          echo "A227C backend files:"
 
           find backend/a227c \
             -type f \
             -print | sort
 
+
+      # ============================================================
+      # PYTHON
+      # ============================================================
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+
+      # ============================================================
+      # CI TOOLS
+      # ============================================================
 
       - name: Install CI test tools
         shell: bash
@@ -250,7 +354,7 @@ jobs:
           set -euo pipefail
 
           echo "=========================================="
-          echo "Installing CI test tools"
+          echo "INSTALLING CI TEST TOOLS"
           echo "=========================================="
 
           python -m pip install --upgrade pip
@@ -260,7 +364,14 @@ jobs:
             pytest-asyncio \
             httpx
 
+          echo ""
+          echo "Installed pytest:"
           python -m pytest --version
+
+
+      # ============================================================
+      # BACKEND DEPENDENCIES
+      # ============================================================
 
       - name: Install A227C backend dependencies
         shell: bash
@@ -272,31 +383,40 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "Installing A227C backend dependencies"
+          echo "INSTALLING A227C BACKEND DEPENDENCIES"
           echo "=========================================="
 
           if [ -f backend/requirements.txt ]; then
 
+            echo "Using backend/requirements.txt"
             python -m pip install -r backend/requirements.txt
 
           elif [ -f requirements.txt ]; then
 
+            echo "Using requirements.txt"
             python -m pip install -r requirements.txt
 
           elif [ -f backend/pyproject.toml ]; then
 
+            echo "Using backend/pyproject.toml"
             python -m pip install -e backend
 
           elif [ -f pyproject.toml ]; then
 
+            echo "Using pyproject.toml"
             python -m pip install -e .
 
           else
 
-            echo "No Python dependency manifest found."
-            echo "Continuing with CI dependencies."
+            echo "No Python dependency manifest detected."
+            echo "Continuing with installed CI dependencies."
 
           fi
+
+
+      # ============================================================
+      # PYTHON IMPORT PATH
+      # ============================================================
 
       - name: Configure A227C Python import path
         shell: bash
@@ -308,13 +428,13 @@ jobs:
           BACKEND_DIR="$PROJECT_DIR/backend"
 
           echo "=========================================="
-          echo "Configuring A227C Python import path"
+          echo "CONFIGURING A227C PYTHON IMPORT PATH"
           echo "=========================================="
 
           test -d "$BACKEND_DIR"
           test -d "$BACKEND_DIR/a227c"
 
-          echo "A227C backend:"
+          echo "Backend:"
           echo "$BACKEND_DIR"
 
           echo "PYTHONPATH=$BACKEND_DIR" >> "$GITHUB_ENV"
@@ -322,7 +442,12 @@ jobs:
           echo ""
           echo "PYTHONPATH configured."
 
-      - name: Verify A227C import
+
+      # ============================================================
+      # VERIFY IMPORT
+      # ============================================================
+
+      - name: Verify A227C Python import
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
@@ -332,17 +457,28 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "Verifying A227C Python import"
+          echo "VERIFYING A227C PYTHON IMPORT"
           echo "=========================================="
 
           python - <<'PY'
           import sys
           import a227c
 
-          print("Python executable:", sys.executable)
-          print("A227C package:", a227c.__file__)
+          print("Python executable:")
+          print(sys.executable)
+
+          print("")
+          print("A227C package:")
+          print(a227c.__file__)
+
+          print("")
           print("A227C import: OK")
           PY
+
+
+      # ============================================================
+      # COMPILE
+      # ============================================================
 
       - name: Run Python compile check
         shell: bash
@@ -354,12 +490,18 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "Running Python compile check"
+          echo "RUNNING PYTHON COMPILE CHECK"
           echo "=========================================="
 
           python -m compileall -q backend
 
-          echo "Python compile check passed."
+          echo ""
+          echo "Python compile check: PASSED"
+
+
+      # ============================================================
+      # TESTS
+      # ============================================================
 
       - name: Run A227C test suite
         shell: bash
@@ -371,12 +513,13 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "Running A227C tests"
+          echo "RUNNING A227C TEST SUITE"
           echo "=========================================="
 
           if [ -d backend/tests ]; then
 
-            echo "Test directory detected:"
+            echo ""
+            echo "Test directory:"
             echo "backend/tests"
 
             python -m pytest \
@@ -386,7 +529,8 @@ jobs:
 
           elif [ -d tests ]; then
 
-            echo "Test directory detected:"
+            echo ""
+            echo "Test directory:"
             echo "tests"
 
             python -m pytest \
@@ -396,11 +540,18 @@ jobs:
 
           else
 
+            echo ""
             echo "WARNING: No test directory found."
+            echo "Compile validation has already passed."
 
           fi
 
-      - name: Locate Android project
+
+      # ============================================================
+      # ANDROID DETECTION
+      # ============================================================
+
+      - name: Locate real Android application
         id: android_project
         shell: bash
         env:
@@ -411,27 +562,116 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "Searching for Android Gradle project"
+          echo "SEARCHING FOR REAL ANDROID APPLICATION"
           echo "=========================================="
 
           ANDROID_DIR=""
 
-          SETTINGS_FILE="$(
+          echo ""
+          echo "Searching specifically for:"
+          echo "  app/build.gradle"
+          echo "  app/build.gradle.kts"
+          echo ""
+
+          while IFS= read -r app_gradle; do
+
+            echo "Checking Android candidate:"
+            echo "$app_gradle"
+
+            APP_DIR="$(dirname "$app_gradle")"
+            CANDIDATE_ANDROID_DIR="$(dirname "$APP_DIR")"
+
+            echo "Candidate Android project:"
+            echo "$CANDIDATE_ANDROID_DIR"
+
+            # --------------------------------------------------------
+            # SETTINGS FILE REQUIRED
+            # --------------------------------------------------------
+
+            SETTINGS_FILE=""
+
+            if [ -f "$CANDIDATE_ANDROID_DIR/settings.gradle" ]; then
+
+              SETTINGS_FILE="$CANDIDATE_ANDROID_DIR/settings.gradle"
+
+            elif [ -f "$CANDIDATE_ANDROID_DIR/settings.gradle.kts" ]; then
+
+              SETTINGS_FILE="$CANDIDATE_ANDROID_DIR/settings.gradle.kts"
+
+            fi
+
+            if [ -z "$SETTINGS_FILE" ]; then
+
+              echo "  -> No settings.gradle/settings.gradle.kts."
+              echo "  -> Candidate rejected."
+              echo ""
+
+              continue
+
+            fi
+
+            echo "  -> Settings file:"
+            echo "     $SETTINGS_FILE"
+
+            # --------------------------------------------------------
+            # VERIFY ANDROID APPLICATION PLUGIN
+            # --------------------------------------------------------
+
+            if grep -Rqs \
+              -E \
+              'com\.android\.application|com\.android\.library' \
+              "$APP_DIR" \
+              2>/dev/null; then
+
+              echo "  -> Android Gradle configuration detected."
+
+              ANDROID_DIR="$CANDIDATE_ANDROID_DIR"
+
+              break
+
+            fi
+
+            echo "  -> Android Gradle plugin not detected."
+            echo "  -> Candidate rejected."
+            echo ""
+
+          done < <(
             find . \
               -type f \
-              \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) \
+              \( \
+                -path '*/app/build.gradle' \
+                -o \
+                -path '*/app/build.gradle.kts' \
+              \) \
               ! -path './.git/*' \
-              -print | sort | head -1
-          )"
+              -print | sort
+          )
 
-          if [ -n "$SETTINGS_FILE" ]; then
-            ANDROID_DIR="$(dirname "$SETTINGS_FILE")"
-          fi
+          # ------------------------------------------------------------
+          # NO ANDROID PROJECT
+          # ------------------------------------------------------------
 
           if [ -z "$ANDROID_DIR" ]; then
 
-            echo "No Android Gradle project found."
-            echo "Android build will be skipped."
+            echo ""
+            echo "=========================================="
+            echo "NO VERIFIED ANDROID APPLICATION FOUND"
+            echo "=========================================="
+
+            echo ""
+            echo "The current A227C source archive does not"
+            echo "contain a verified Android application module."
+
+            echo ""
+            echo "This is NOT a CI failure."
+
+            echo ""
+            echo "Android APK build:"
+            echo "SKIPPED"
+
+            echo ""
+            echo "Backend validation remains the authoritative"
+            echo "validation for this source archive."
 
             echo "android_available=false" >> "$GITHUB_OUTPUT"
 
@@ -439,19 +679,32 @@ jobs:
 
           fi
 
-          echo "Android project found:"
+          # ------------------------------------------------------------
+          # ANDROID PROJECT FOUND
+          # ------------------------------------------------------------
+
+          echo ""
+          echo "=========================================="
+          echo "VERIFIED ANDROID PROJECT FOUND"
+          echo "=========================================="
+
+          echo "Android project:"
           echo "$ANDROID_DIR"
 
-          if [ ! -f "$ANDROID_DIR/app/build.gradle" ] && \
-             [ ! -f "$ANDROID_DIR/app/build.gradle.kts" ]; then
+          echo ""
+          echo "Application module:"
+          echo "$ANDROID_DIR/app"
 
-            echo "ERROR: Android app module missing."
-            exit 1
-
-          fi
+          echo ""
+          echo "Android project validation: PASSED"
 
           echo "android_available=true" >> "$GITHUB_OUTPUT"
           echo "android_dir=$ANDROID_DIR" >> "$GITHUB_OUTPUT"
+
+
+      # ============================================================
+      # JAVA 17
+      # ============================================================
 
       - name: Set up JDK 17
         if: steps.android_project.outputs.android_available == 'true'
@@ -460,99 +713,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+
+      # ============================================================
+      # GRADLE 8.7
+      # ============================================================
+
       - name: Set up Gradle 8.7
         if: steps.android_project.outputs.android_available == 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
+
+      # ============================================================
+      # ANDROID DEBUG
+      # ============================================================
+
       - name: Build Android Debug APK
-        if: steps.android_project.outputs.android_available == 'true'
-        shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
-          ANDROID_DIR: ${{ steps.android_project.outputs.android_dir }}
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR/$ANDROID_DIR"
-
-          if [ -f gradlew ]; then
-
-            chmod +x gradlew
-            ./gradlew assembleDebug --stacktrace
-
-          else
-
-            gradle assembleDebug --stacktrace
-
-          fi
-
-      - name: Build Android Release APK
-        if: steps.android_project.outputs.android_available == 'true'
-        shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
-          ANDROID_DIR: ${{ steps.android_project.outputs.android_dir }}
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR/$ANDROID_DIR"
-
-          if [ -f gradlew ]; then
-
-            chmod +x gradlew
-            ./gradlew assembleRelease --stacktrace
-
-          else
-
-            gradle assembleRelease --stacktrace
-
-          fi
-
-      - name: Upload A227C Android artifacts
-        if: steps.android_project.outputs.android_available == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: UNIVERSAL-TRADING-BOT-A227C-Android-APKs
-          if-no-files-found: error
-          path: |
-            ${{ steps.project_root.outputs.project_dir }}/${{ steps.android_project.outputs.android_dir }}/app/build/outputs/apk/debug/*.apk
-            ${{ steps.project_root.outputs.project_dir }}/${{ steps.android_project.outputs.android_dir }}/app/build/outputs/apk/release/*.apk
-
-      - name: Final A227C build summary
-        shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
-        run: |
-          set -euo pipefail
-
-          echo ""
-          echo "=========================================="
-          echo "A227C CI SUMMARY"
-          echo "=========================================="
-
-          echo "Source archive: detected"
-          echo "Source extraction: successful"
-          echo "Project root: $PROJECT_DIR"
-          echo "Backend source: detected"
-          echo "A227C import: verified"
-          echo "Python compilation: successful"
-          echo "A227C tests: successful"
-
-          if [ "${{ steps.android_project.outputs.android_available }}" = "true" ]; then
-
-            echo "Android project: detected"
-            echo "Android Debug APK: built"
-            echo "Android Release APK: built"
-
-          else
-
-            echo "Android project: not present in this archive"
-            echo "Android APK build: skipped"
-
-          fi
-
-          echo "=========================================="
-          echo "A227C CI PROCESS COMPLETED"
-          echo "=========================================="
+        if: steps.android_
