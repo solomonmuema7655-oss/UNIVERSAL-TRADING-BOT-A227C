@@ -6,20 +6,22 @@ on:
     branches:
       - main
       - master
-  pull_request:
+    paths:
+      - ".github/workflows/main.yml"
+      - "**"
 
 permissions:
   contents: read
 
 concurrency:
   group: a227c-revision-1-6-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: A227C Revision 1.6 Complete Build
+    name: A227C Complete Build and Validation
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     env:
       SOURCE_ARCHIVE: UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-EXNESS-PIPELINE-HARDENED.zip
@@ -27,391 +29,156 @@ jobs:
       ARTIFACT_DIR: ${{ github.workspace }}/a227c-artifacts
 
     steps:
-
-      # ================================================
+      # --------------------------------------------------
       # 1. CHECKOUT
-      # ================================================
+      # --------------------------------------------------
 
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # --------------------------------------------------
+      # 2. PYTHON ENVIRONMENT
+      # --------------------------------------------------
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 1
+          python-version: "3.11"
+          cache: pip
 
-      # ================================================
-      # 2. INITIALIZE DIRECTORIES
-      # ================================================
+      # --------------------------------------------------
+      # 3. FIND AND EXTRACT THE EXACT REVISION 1.6 ARCHIVE
+      # --------------------------------------------------
 
-      - name: Initialize build directories
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf "$SOURCE_DIR" "$ARTIFACT_DIR"
-
-          mkdir -p "$SOURCE_DIR"
-          mkdir -p "$ARTIFACT_DIR/source"
-          mkdir -p "$ARTIFACT_DIR/reports"
-          mkdir -p "$ARTIFACT_DIR/android"
-
-          echo "A227C Revision 1.6 build initialized."
-
-      # ================================================
-      # 3. SET UP JAVA 17
-      # ================================================
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      # ================================================
-      # 4. INSTALL GRADLE 8.7
-      # ================================================
-
-      - name: Install Gradle 8.7
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip \
-            -O /tmp/gradle-8.7.zip
-
-          unzip -q /tmp/gradle-8.7.zip -d /opt
-
-          echo "/opt/gradle-8.7/bin" >> "$GITHUB_PATH"
-
-      # ================================================
-      # 5. SET UP ANDROID SDK API 35
-      # ================================================
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: false
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
-
-      - name: Verify Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -z "$SDK" ]; then
-            echo "ERROR: Android SDK location unavailable."
-            exit 1
-          fi
-
-          test -d "$SDK/platform-tools"
-          test -d "$SDK/platforms/android-35"
-          test -d "$SDK/build-tools/35.0.0"
-
-          echo "Android SDK verified: $SDK"
-
-      # ================================================
-      # 6. LOCATE EXACT REVISION 1.6 ARCHIVE
-      # ================================================
-
-      - name: Locate Revision 1.6 source archive
+      - name: Discover and extract Revision 1.6 source
         id: source
         shell: bash
         run: |
           set -euo pipefail
 
-          ARCHIVE=""
+          mkdir -p "$SOURCE_DIR" "$ARTIFACT_DIR"
 
-          while IFS= read -r -d '' candidate; do
-            if [ -n "$ARCHIVE" ]; then
-              echo "ERROR: Multiple Revision 1.6 archives found."
-              echo "$ARCHIVE"
-              echo "$candidate"
-              exit 1
-            fi
+          echo "Searching for the exact Revision 1.6 archive..."
 
-            ARCHIVE="$candidate"
-
-          done < <(
+          mapfile -t ARCHIVES < <(
             find "$GITHUB_WORKSPACE" \
-              -path "$GITHUB_WORKSPACE/.git" -prune -o \
-              -path "$SOURCE_DIR" -prune -o \
-              -path "$ARTIFACT_DIR" -prune -o \
               -type f \
               -name "$SOURCE_ARCHIVE" \
-              -print0
+              -not -path "*/.git/*"
           )
 
-          if [ -z "$ARCHIVE" ]; then
-            echo "ERROR: Exact Revision 1.6 archive not found."
-            echo "Required: $SOURCE_ARCHIVE"
+          if [ "${#ARCHIVES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Revision 1.6 archive."
+            echo "Found: ${#ARCHIVES[@]}"
+            printf '%s\n' "${ARCHIVES[@]:-No matching archive}"
             exit 1
           fi
 
-          echo "Selected Revision 1.6 archive:"
-          echo "$ARCHIVE"
+          ARCHIVE="${ARCHIVES[0]}"
+
+          echo "Selected archive: $ARCHIVE"
 
           unzip -t "$ARCHIVE"
 
           unzip -q "$ARCHIVE" -d "$SOURCE_DIR"
 
-          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
-
-      # ================================================
-      # 7. DETECT A227C PROJECT ROOT
-      # ================================================
-
-      - name: Locate and verify A227C project
-        id: project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PROJECT_DIR=""
-
-          while IFS= read -r -d '' file; do
-            candidate="${file%/backend/a227c/core/indicators.py}"
-
-            if [ -f "$candidate/backend/a227c/core/indicators.py" ]; then
-              PROJECT_DIR="$candidate"
-              break
-            fi
-          done < <(
+          mapfile -t INDICATORS < <(
             find "$SOURCE_DIR" \
               -type f \
-              -path '*/backend/a227c/core/indicators.py' \
-              -print0
+              -path "*/backend/a227c/core/indicators.py"
           )
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: A227C backend indicator module missing."
+          if [ "${#INDICATORS[@]}" -ne 1 ]; then
+            echo "::error::Could not identify one unique A227C backend source root."
+            printf '%s\n' "${INDICATORS[@]:-No indicator module found}"
             exit 1
           fi
 
-          if [ ! -d "$PROJECT_DIR/backend/a227c" ]; then
-            echo "ERROR: A227C backend package missing."
+          INDICATOR="${INDICATORS[0]}"
+
+          PROJECT_DIR="${INDICATOR%/backend/a227c/core/indicators.py}"
+
+          if [ ! -f "$PROJECT_DIR/backend/a227c/core/indicators.py" ]; then
+            echo "::error::A227C project root verification failed."
             exit 1
           fi
-
-          PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "PYTHONPATH=$PROJECT_DIR/backend" >> "$GITHUB_ENV"
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo "A227C project root verified:"
-          echo "$PROJECT_DIR"
+          echo "result=success" >> "$GITHUB_OUTPUT"
 
-      # ================================================
-      # 8. VERIFY ANDROID APPLICATION
-      # ================================================
+          echo "Revision 1.6 source successfully extracted."
+          echo "Project root: $PROJECT_DIR"
 
-      - name: Detect mandatory Android application
-        id: android
-        shell: bash
-        run: |
-          set -euo pipefail
+      # --------------------------------------------------
+      # 4. INSTALL PYTHON DEPENDENCIES
+      # --------------------------------------------------
 
-          ANDROID_ROOT=""
-          MODULE_DIR=""
-
-          while IFS= read -r -d '' candidate; do
-
-            current="$(dirname "$candidate")"
-
-            while :; do
-
-              if [ -f "$current/settings.gradle" ] ||
-                 [ -f "$current/settings.gradle.kts" ]; then
-
-                ANDROID_ROOT="$current"
-                MODULE_DIR="$(dirname "$candidate")"
-                break
-              fi
-
-              if [ "$current" = "$PROJECT_DIR" ] ||
-                 [ "$current" = "/" ]; then
-                break
-              fi
-
-              case "$current/" in
-                "$PROJECT_DIR/"*)
-                  current="$(dirname "$current")"
-                  ;;
-                *)
-                  break
-                  ;;
-              esac
-
-            done
-
-            if [ -n "$ANDROID_ROOT" ]; then
-              break
-            fi
-
-          done < <(
-            find "$PROJECT_DIR" \
-              -path '*/.gradle' -prune -o \
-              -path '*/build' -prune -o \
-              -type f \
-              \( -path '*/app/build.gradle' -o \
-                 -path '*/app/build.gradle.kts' \) \
-              -print0
-          )
-
-          if [ -z "$ANDROID_ROOT" ] || [ -z "$MODULE_DIR" ]; then
-            echo "ERROR: Mandatory Android project not detected."
-            exit 1
-          fi
-
-          APP_GRADLE=""
-
-          if [ -f "$MODULE_DIR/build.gradle.kts" ]; then
-            APP_GRADLE="$MODULE_DIR/build.gradle.kts"
-          elif [ -f "$MODULE_DIR/build.gradle" ]; then
-            APP_GRADLE="$MODULE_DIR/build.gradle"
-          fi
-
-          if [ -z "$APP_GRADLE" ]; then
-            echo "ERROR: Android module Gradle file missing."
-            exit 1
-          fi
-
-          if ! grep -Eq \
-            'com\.android\.application|libs\.plugins\.android\.application|alias[[:space:]]*\([[:space:]]*libs\.plugins\.android\.application' \
-            "$APP_GRADLE"; then
-            echo "ERROR: Android application plugin not detected."
-            exit 1
-          fi
-
-          MODULE_RELATIVE="${MODULE_DIR#"$ANDROID_ROOT"/}"
-
-          if [ "$MODULE_RELATIVE" = "$MODULE_DIR" ] ||
-             [ -z "$MODULE_RELATIVE" ]; then
-            echo "ERROR: Android module is outside Gradle root."
-            exit 1
-          fi
-
-          MODULE_TASK_PATH=":$(printf '%s' "$MODULE_RELATIVE" | tr '/' ':')"
-
-          MANIFEST="$MODULE_DIR/src/main/AndroidManifest.xml"
-          LOGO="$MODULE_DIR/src/main/res/drawable-nodpi/a227c_logo.png"
-
-          if [ ! -s "$MANIFEST" ]; then
-            echo "ERROR: Android manifest missing."
-            exit 1
-          fi
-
-          if ! find "$MODULE_DIR/src/main" \
-            -type f \( -name '*.kt' -o -name '*.java' \) \
-            -print -quit | grep -q .; then
-            echo "ERROR: Android source files missing."
-            exit 1
-          fi
-
-          if [ ! -s "$LOGO" ]; then
-            echo "ERROR: Official A227C logo missing."
-            find "$MODULE_DIR/src/main/res" -type f -print || true
-            exit 1
-          fi
-
-          echo "ANDROID_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
-          echo "MODULE_DIR=$MODULE_DIR" >> "$GITHUB_ENV"
-          echo "MODULE_TASK_PATH=$MODULE_TASK_PATH" >> "$GITHUB_ENV"
-
-          echo "Android project root: $ANDROID_ROOT"
-          echo "Android module: $MODULE_DIR"
-          echo "Gradle module path: $MODULE_TASK_PATH"
-          echo "Android manifest verified."
-          echo "Official A227C logo verified."
-
-      # ================================================
-      # 9. SET UP PYTHON 3.11
-      # ================================================
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # ================================================
-      # 10. INSTALL BACKEND DEPENDENCIES
-      # ================================================
-
-      - name: Install A227C Python dependencies
+      - name: Install Python dependencies
         id: dependencies
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$PROJECT_DIR"
-
           python -m pip install --upgrade pip setuptools wheel
 
-          python -m pip install numpy
+          python -m pip install \
+            numpy \
+            pandas \
+            pytest
 
-          REQUIREMENTS_FILES=(
-            "$PROJECT_DIR/backend/requirements.txt"
-            "$PROJECT_DIR/requirements.txt"
-            "$PROJECT_DIR/backend/requirements-dev.txt"
-            "$PROJECT_DIR/requirements-dev.txt"
-          )
-
-          for REQUIREMENTS in "${REQUIREMENTS_FILES[@]}"; do
-            if [ -f "$REQUIREMENTS" ]; then
-              echo "Installing $REQUIREMENTS"
-              python -m pip install -r "$REQUIREMENTS"
-            fi
-          done
-
-          if [ -f "$PROJECT_DIR/backend/pyproject.toml" ]; then
-            python -m pip install -e "$PROJECT_DIR/backend"
-          elif [ -f "$PROJECT_DIR/pyproject.toml" ]; then
-            python -m pip install -e "$PROJECT_DIR"
+          if [ -f "$PROJECT_DIR/backend/requirements.txt" ]; then
+            python -m pip install \
+              -r "$PROJECT_DIR/backend/requirements.txt"
           fi
 
-          python -m pip install pytest pytest-asyncio httpx
+          echo "result=success" >> "$GITHUB_OUTPUT"
 
-          python -c "import numpy; print('NumPy:', numpy.__version__)"
+      # --------------------------------------------------
+      # 5. VERIFY PYTHON IMPORTS
+      # --------------------------------------------------
 
-          python -m pip check
-
-      # ================================================
-      # 11. VERIFY BACKEND IMPORTS
-      # ================================================
-
-      - name: Verify A227C imports
+      - name: Verify A227C Python imports
         id: imports
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$PROJECT_DIR"
+          cd "$PROJECT_DIR/backend"
 
-          python -c "import a227c"
-          python -c "import a227c.core.indicators"
+          python - <<'PY'
+          import importlib
 
-          echo "A227C imports verified."
+          modules = [
+              "a227c.core.indicators",
+              "a227c.research.exness_tick_history",
+          ]
 
-      # ================================================
-      # 12. COMPILE PYTHON
-      # ================================================
+          for module_name in modules:
+              importlib.import_module(module_name)
+              print(f"IMPORT SUCCESS: {module_name}")
+          PY
 
-      - name: Compile A227C Python source
+          echo "result=success" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------
+      # 6. COMPILE PYTHON SOURCE
+      # --------------------------------------------------
+
+      - name: Compile Python source
         id: compile
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$PROJECT_DIR"
+          python -m compileall -q "$PROJECT_DIR/backend"
 
-          python -m compileall -q backend/a227c
+          echo "result=success" >> "$GITHUB_OUTPUT"
 
-          echo "Python compilation successful."
-
-      # ================================================
-      # 13. RUN AUTOMATED TESTS
-      # ================================================
+      # --------------------------------------------------
+      # 7. RUN AUTOMATED TESTS
+      # --------------------------------------------------
 
       - name: Run A227C automated tests
         id: tests
@@ -419,123 +186,247 @@ jobs:
         run: |
           set -euo pipefail
 
-          cd "$PROJECT_DIR"
+          cd "$PROJECT_DIR/backend"
 
           mapfile -t TEST_FILES < <(
-            find . \
-              -path './.git' -prune -o \
-              -path './.venv' -prune -o \
-              -path './venv' -prune -o \
-              -path '*/__pycache__' -prune -o \
-              -path '*/.pytest_cache' -prune -o \
-              -type f \
-              \( -name 'test_*.py' -o -name '*_test.py' \) \
-              -print
+            find . -type f \
+              \( -name "test_*.py" -o -name "*_test.py" \)
           )
 
           if [ "${#TEST_FILES[@]}" -eq 0 ]; then
-            echo "ERROR: No automated test files found."
+            echo "::error::No automated Python test files were found."
             exit 1
           fi
 
-          echo "Found ${#TEST_FILES[@]} test files."
+          python -m pytest -q
 
-          python -m pytest -v "${TEST_FILES[@]}"
+          echo "result=success" >> "$GITHUB_OUTPUT"
 
-          echo "A227C tests passed."
+      # --------------------------------------------------
+      # 8. VERIFY AND PACKAGE COMPLETE SOURCE
+      # --------------------------------------------------
 
-      # ================================================
-      # 14. PACKAGE COMPLETE SOURCE
-      # ================================================
-
-      - name: Package complete A227C source
+      - name: Package Revision 1.6 source
         id: package
         shell: bash
         run: |
           set -euo pipefail
 
-          OUTPUT="$ARTIFACT_DIR/source/UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-COMPLETE-SOURCE.zip"
-
-          mkdir -p "$(dirname "$OUTPUT")"
-
           cd "$PROJECT_DIR"
 
-          zip -qr "$OUTPUT" . \
-            -x "./.git/*" \
-            -x "./.venv/*" \
-            -x "./venv/*" \
-            -x "./__pycache__/*" \
-            -x "*/__pycache__/*" \
-            -x "./.pytest_cache/*" \
-            -x "*/.pytest_cache/*" \
-            -x "*/build/*" \
-            -x "*/.gradle/*"
+          zip -qr \
+            "$ARTIFACT_DIR/UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-SOURCE.zip" \
+            . \
+            -x "*/.git/*" \
+               "*/.gradle/*" \
+               "*/build/*" \
+               "*/__pycache__/*" \
+               "*/.pytest_cache/*"
 
-          if [ ! -s "$OUTPUT" ]; then
-            echo "ERROR: Source ZIP missing."
+          test -s "$ARTIFACT_DIR/UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-SOURCE.zip"
+
+          unzip -t \
+            "$ARTIFACT_DIR/UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-SOURCE.zip"
+
+          echo "result=success" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------
+      # 9. JAVA 17
+      # --------------------------------------------------
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # --------------------------------------------------
+      # 10. INSTALL GRADLE 8.7
+      # --------------------------------------------------
+
+      - name: Install Gradle 8.7
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLE_VERSION="8.7"
+          GRADLE_HOME_DIR="$RUNNER_TEMP/gradle"
+
+          mkdir -p "$GRADLE_HOME_DIR"
+
+          wget -q \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+            -O "$RUNNER_TEMP/gradle-${GRADLE_VERSION}.zip"
+
+          unzip -q \
+            "$RUNNER_TEMP/gradle-${GRADLE_VERSION}.zip" \
+            -d "$GRADLE_HOME_DIR"
+
+          echo "$GRADLE_HOME_DIR/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+          echo "Gradle 8.7 installed."
+
+      # --------------------------------------------------
+      # 11. ANDROID SDK
+      # --------------------------------------------------
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK platform and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # --------------------------------------------------
+      # 12. VERIFY ANDROID PROJECT AND MODULE
+      # --------------------------------------------------
+
+      - name: Verify Android project
+        id: android
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking Android project..."
+
+          ANDROID_ROOT="$PROJECT_DIR"
+
+          SETTINGS_FILE=""
+
+          CURRENT_DIR="$PROJECT_DIR"
+
+          while [[ "$CURRENT_DIR" == "$GITHUB_WORKSPACE"* ]]; do
+            if [ -f "$CURRENT_DIR/settings.gradle.kts" ]; then
+              SETTINGS_FILE="$CURRENT_DIR/settings.gradle.kts"
+              ANDROID_ROOT="$CURRENT_DIR"
+              break
+            fi
+
+            if [ -f "$CURRENT_DIR/settings.gradle" ]; then
+              SETTINGS_FILE="$CURRENT_DIR/settings.gradle"
+              ANDROID_ROOT="$CURRENT_DIR"
+              break
+            fi
+
+            if [ "$CURRENT_DIR" = "$GITHUB_WORKSPACE" ]; then
+              break
+            fi
+
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+          done
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::Android settings.gradle or settings.gradle.kts was not found."
             exit 1
           fi
 
-          unzip -tq "$OUTPUT"
+          echo "Android root: $ANDROID_ROOT"
+          echo "Settings file: $SETTINGS_FILE"
 
-          echo "Source ZIP verified:"
-          ls -lh "$OUTPUT"
+          mapfile -t MODULE_FILES < <(
+            find "$ANDROID_ROOT" \
+              -type f \
+              \( -path "*/app/build.gradle" -o -path "*/app/build.gradle.kts" \) \
+              -not -path "*/.gradle/*" \
+              -not -path "*/build/*"
+          )
 
-          echo "package_ready=true" >> "$GITHUB_OUTPUT"
+          if [ "${#MODULE_FILES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Android app module."
+            printf '%s\n' "${MODULE_FILES[@]:-No Android app module found}"
+            exit 1
+          fi
 
-      # ================================================
-      # 15. VERIFY GRADLE
-      # ================================================
+          MODULE_BUILD_FILE="${MODULE_FILES[0]}"
+          MODULE_DIR="$(dirname "$MODULE_BUILD_FILE")"
 
-      - name: Verify Gradle 8.7
+          RELATIVE_MODULE="${MODULE_DIR#"$ANDROID_ROOT"/}"
+
+          MODULE_TASK_PATH=""
+
+          IFS='/' read -ra MODULE_PARTS <<< "$RELATIVE_MODULE"
+
+          for PART in "${MODULE_PARTS[@]}"; do
+            MODULE_TASK_PATH="${MODULE_TASK_PATH}:$PART"
+          done
+
+          MANIFEST="$MODULE_DIR/src/main/AndroidManifest.xml"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::AndroidManifest.xml is missing."
+            exit 1
+          fi
+
+          if [ ! -d "$MODULE_DIR/src/main" ]; then
+            echo "::error::Android source directory is missing."
+            exit 1
+          fi
+
+          LOGO_FOUND=false
+
+          for LOGO in \
+            "$MODULE_DIR/src/main/res/drawable-nodpi/a227c_logo.png" \
+            "$MODULE_DIR/src/main/res/drawable/a227c_logo.png" \
+            "$MODULE_DIR/src/main/res/drawable/a227c_logo.webp" \
+            "$MODULE_DIR/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
+          do
+            if [ -f "$LOGO" ]; then
+              echo "Verified image resource: $LOGO"
+              LOGO_FOUND=true
+              break
+            fi
+          done
+
+          if [ "$LOGO_FOUND" != "true" ]; then
+            echo "::error::Expected A227C logo resource was not found."
+            exit 1
+          fi
+
+          echo "ANDROID_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
+          echo "MODULE_DIR=$MODULE_DIR" >> "$GITHUB_ENV"
+          echo "MODULE_TASK_PATH=$MODULE_TASK_PATH" >> "$GITHUB_ENV"
+
+          echo "result=success" >> "$GITHUB_OUTPUT"
+
+          echo "Android project verified."
+          echo "Module: $MODULE_DIR"
+          echo "Gradle module path: $MODULE_TASK_PATH"
+
+      # --------------------------------------------------
+      # 13. VERIFY GRADLE ENVIRONMENT
+      # --------------------------------------------------
+
+      - name: Verify Java and Gradle
         shell: bash
         run: |
           set -euo pipefail
 
+          java -version
           gradle --version
 
-      # ================================================
-      # 16. VERIFY GRADLE MODULE
-      # ================================================
+          test "$JAVA_HOME" != ""
 
-      - name: Verify Android Gradle module
+      # --------------------------------------------------
+      # 14. CLEAN AND BUILD DEBUG APK
+      # --------------------------------------------------
+
+      - name: Clean Android build
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$ANDROID_ROOT"
-
           gradle \
-            --no-daemon \
-            --console=plain \
-            projects
-
-          gradle \
-            --no-daemon \
-            --console=plain \
-            help \
-            --task "$MODULE_TASK_PATH:assembleDebug"
-
-      # ================================================
-      # 17. CLEAN ANDROID PROJECT
-      # ================================================
-
-      - name: Clean Android project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$ANDROID_ROOT"
-
-          gradle \
-            --no-daemon \
             -p "$ANDROID_ROOT" \
             "$MODULE_TASK_PATH:clean" \
-            --stacktrace
-
-      # ================================================
-      # 18. BUILD DEBUG APK
-      # ================================================
+            --no-daemon
 
       - name: Build Debug APK
         id: debug
@@ -543,45 +434,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          cd "$ANDROID_ROOT"
-
           gradle \
-            --no-daemon \
             -p "$ANDROID_ROOT" \
             "$MODULE_TASK_PATH:assembleDebug" \
+            --no-daemon \
             --stacktrace
 
-      - name: Verify Debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
+          mapfile -t DEBUG_APKS < <(
+            find "$MODULE_DIR/build/outputs/apk" \
+              -type f \
+              -name "*.apk"
+          )
 
-          APK_DIR="$MODULE_DIR/build/outputs/apk/debug"
-
-          APK="$(find "$APK_DIR" \
-            -type f -name '*.apk' \
-            -print -quit 2>/dev/null || true)"
-
-          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
-            echo "ERROR: Debug APK missing."
-            find "$MODULE_DIR/build/outputs" -type f -print || true
+          if [ "${#DEBUG_APKS[@]}" -eq 0 ]; then
+            echo "::error::Debug APK was not generated."
             exit 1
           fi
 
-          echo "Debug APK verified:"
-          ls -lh "$APK"
+          mkdir -p "$ARTIFACT_DIR/debug"
 
-      - name: Upload Debug APK
+          for APK in "${DEBUG_APKS[@]}"; do
+            cp "$APK" "$ARTIFACT_DIR/debug/"
+            echo "Debug APK generated: $APK"
+          done
+
+          echo "result=success" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: UNIVERSAL-TRADING-BOT-A227C-Debug-APK
-          path: ${{ env.MODULE_DIR }}/build/outputs/apk/debug/*.apk
+          path: ${{ github.workspace }}/a227c-artifacts/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      # ================================================
-      # 19. BUILD RELEASE APK
-      # ================================================
+      # --------------------------------------------------
+      # 15. BUILD RELEASE APK
+      # --------------------------------------------------
 
       - name: Build Release APK
         id: release
@@ -589,61 +478,58 @@ jobs:
         run: |
           set -euo pipefail
 
-          cd "$ANDROID_ROOT"
-
           gradle \
-            --no-daemon \
             -p "$ANDROID_ROOT" \
             "$MODULE_TASK_PATH:assembleRelease" \
+            --no-daemon \
             --stacktrace
 
-      - name: Verify Release APK
-        shell: bash
-        run: |
-          set -euo pipefail
+          mapfile -t RELEASE_APKS < <(
+            find "$MODULE_DIR/build/outputs/apk" \
+              -type f \
+              -path "*/release/*.apk"
+          )
 
-          APK_DIR="$MODULE_DIR/build/outputs/apk/release"
-
-          APK="$(find "$APK_DIR" \
-            -type f -name '*.apk' \
-            -print -quit 2>/dev/null || true)"
-
-          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
-            echo "ERROR: Release APK missing."
-            find "$MODULE_DIR/build/outputs" -type f -print || true
+          if [ "${#RELEASE_APKS[@]}" -eq 0 ]; then
+            echo "::error::Release APK was not generated."
             exit 1
           fi
 
-          echo "Release APK verified:"
-          ls -lh "$APK"
+          mkdir -p "$ARTIFACT_DIR/release"
 
-      - name: Upload Release APK
+          for APK in "${RELEASE_APKS[@]}"; do
+            cp "$APK" "$ARTIFACT_DIR/release/"
+            echo "Release APK generated: $APK"
+          done
+
+          echo "result=success" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: UNIVERSAL-TRADING-BOT-A227C-Release-APK
-          path: ${{ env.MODULE_DIR }}/build/outputs/apk/release/*.apk
+          path: ${{ github.workspace }}/a227c-artifacts/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      # ================================================
-      # 20. GENERATE BUILD REPORT
-      # ================================================
+      # --------------------------------------------------
+      # 16. GENERATE COMPLETE BUILD REPORT
+      # --------------------------------------------------
 
-      - name: Generate A227C build report
+      - name: Generate build report
         if: always()
         shell: bash
         env:
           JOB_STATUS: ${{ job.status }}
-          SOURCE_RESULT: ${{ steps.source.outcome }}
-          PROJECT_RESULT: ${{ steps.project.outcome }}
-          ANDROID_RESULT: ${{ steps.android.outcome }}
-          DEPENDENCY_RESULT: ${{ steps.dependencies.outcome }}
-          IMPORT_RESULT: ${{ steps.imports.outcome }}
-          COMPILE_RESULT: ${{ steps.compile.outcome }}
-          TEST_RESULT: ${{ steps.tests.outcome }}
-          PACKAGE_RESULT: ${{ steps.package.outcome }}
-          DEBUG_RESULT: ${{ steps.debug.outcome }}
-          RELEASE_RESULT: ${{ steps.release.outcome }}
+          SOURCE_RESULT: ${{ steps.source.outputs.result }}
+          DEPENDENCY_RESULT: ${{ steps.dependencies.outputs.result }}
+          IMPORT_RESULT: ${{ steps.imports.outputs.result }}
+          COMPILE_RESULT: ${{ steps.compile.outputs.result }}
+          TEST_RESULT: ${{ steps.tests.outputs.result }}
+          PACKAGE_RESULT: ${{ steps.package.outputs.result }}
+          ANDROID_RESULT: ${{ steps.android.outputs.result }}
+          DEBUG_RESULT: ${{ steps.debug.outputs.result }}
+          RELEASE_RESULT: ${{ steps.release.outputs.result }}
         run: |
           set -euo pipefail
 
@@ -665,19 +551,63 @@ jobs:
             echo "Android SDK: API 35"
             echo
             echo "Source discovery: ${SOURCE_RESULT:-not completed}"
-            echo "Project verification: ${PROJECT_RESULT:-not completed}"
-            echo "Android verification: ${ANDROID_RESULT:-not completed}"
             echo "Dependencies: ${DEPENDENCY_RESULT:-not completed}"
             echo "Imports: ${IMPORT_RESULT:-not completed}"
             echo "Compilation: ${COMPILE_RESULT:-not completed}"
             echo "Automated tests: ${TEST_RESULT:-not completed}"
             echo "Source packaging: ${PACKAGE_RESULT:-not completed}"
+            echo "Android verification: ${ANDROID_RESULT:-not completed}"
             echo "Debug APK: ${DEBUG_RESULT:-not completed}"
             echo "Release APK: ${RELEASE_RESULT:-not completed}"
             echo
-            echo "Overall job status: ${JOB_STATUS:-unknown}"
+            echo "Overall job status: $JOB_STATUS"
             echo
-            echo "A successful build does not establish live"
-            echo "broker connectivity or physical-device acceptance."
+            echo "A227C is a signal-analysis application."
+            echo "It does not execute or manage broker trades."
+            echo "Build success does not establish live broker"
+            echo "connectivity or physical-device acceptance."
             echo
-            echo "A227C is a signal-analysi
+            echo "END OF REPORT"
+          } > "$REPORT"
+
+          echo "Build report generated: $REPORT"
+
+          test -s "$REPORT"
+
+      # --------------------------------------------------
+      # 17. UPLOAD SOURCE AND REPORT
+      # --------------------------------------------------
+
+      - name: Upload source and build report
+        if: always() && steps.package.outputs.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: UNIVERSAL-TRADING-BOT-A227C-Revision-1.6-Source-and-Report
+          path: |
+            ${{ github.workspace }}/a227c-artifacts/UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-SOURCE.zip
+            ${{ github.workspace }}/a227c-artifacts/reports/A227C-REVISION-1.6-BUILD-REPORT.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      # --------------------------------------------------
+      # 18. FINAL SUCCESS CONFIRMATION
+      # --------------------------------------------------
+
+      - name: Confirm complete build
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=============================================="
+          echo "A227C REVISION 1.6 BUILD COMPLETED SUCCESSFULLY"
+          echo "=============================================="
+          echo
+          echo "Python validation: SUCCESS"
+          echo "Android validation: SUCCESS"
+          echo "Debug APK: GENERATED"
+          echo "Release APK: GENERATED"
+          echo "Source package: GENERATED"
+          echo "Build report: GENERATED"
+          echo
+          echo "Check the Actions Artifacts section for downloads."
