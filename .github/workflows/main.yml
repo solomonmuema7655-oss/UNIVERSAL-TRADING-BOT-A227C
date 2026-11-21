@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 1
 
       # ================================================
-      # 2. INITIALIZE
+      # 2. INITIALIZE DIRECTORIES
       # ================================================
 
       - name: Initialize build directories
@@ -53,11 +53,10 @@ jobs:
           mkdir -p "$ARTIFACT_DIR/reports"
           mkdir -p "$ARTIFACT_DIR/android"
 
-          echo "Revision: 1.6"
-          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "A227C Revision 1.6 build initialized."
 
       # ================================================
-      # 3. JAVA 17
+      # 3. SET UP JAVA 17
       # ================================================
 
       - name: Set up Java 17
@@ -67,7 +66,7 @@ jobs:
           java-version: '17'
 
       # ================================================
-      # 4. GRADLE 8.7
+      # 4. INSTALL GRADLE 8.7
       # ================================================
 
       - name: Install Gradle 8.7
@@ -83,7 +82,7 @@ jobs:
           echo "/opt/gradle-8.7/bin" >> "$GITHUB_PATH"
 
       # ================================================
-      # 5. ANDROID SDK API 35
+      # 5. SET UP ANDROID SDK API 35
       # ================================================
 
       - name: Set up Android SDK
@@ -101,7 +100,7 @@ jobs:
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
           if [ -z "$SDK" ]; then
-            echo "ERROR: Android SDK location is unavailable."
+            echo "ERROR: Android SDK location unavailable."
             exit 1
           fi
 
@@ -112,7 +111,7 @@ jobs:
           echo "Android SDK verified: $SDK"
 
       # ================================================
-      # 6. LOCATE EXACT REVISION 1.6 SOURCE ARCHIVE
+      # 6. LOCATE EXACT REVISION 1.6 ARCHIVE
       # ================================================
 
       - name: Locate Revision 1.6 source archive
@@ -124,8 +123,15 @@ jobs:
           ARCHIVE=""
 
           while IFS= read -r -d '' candidate; do
+            if [ -n "$ARCHIVE" ]; then
+              echo "ERROR: Multiple Revision 1.6 archives found."
+              echo "$ARCHIVE"
+              echo "$candidate"
+              exit 1
+            fi
+
             ARCHIVE="$candidate"
-            break
+
           done < <(
             find "$GITHUB_WORKSPACE" \
               -path "$GITHUB_WORKSPACE/.git" -prune -o \
@@ -137,28 +143,25 @@ jobs:
           )
 
           if [ -z "$ARCHIVE" ]; then
-            echo "ERROR: Exact Revision 1.6 source archive not found."
-            echo "Required filename: $SOURCE_ARCHIVE"
+            echo "ERROR: Exact Revision 1.6 archive not found."
+            echo "Required: $SOURCE_ARCHIVE"
             exit 1
           fi
 
-          echo "Selected archive:"
+          echo "Selected Revision 1.6 archive:"
           echo "$ARCHIVE"
 
           unzip -t "$ARCHIVE"
-
-          rm -rf "$SOURCE_DIR"
-          mkdir -p "$SOURCE_DIR"
 
           unzip -q "$ARCHIVE" -d "$SOURCE_DIR"
 
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
       # ================================================
-      # 7. DETECT COMPLETE A227C PROJECT ROOT
+      # 7. DETECT A227C PROJECT ROOT
       # ================================================
 
-      - name: Locate and verify A227C project root
+      - name: Locate and verify A227C project
         id: project
         shell: bash
         run: |
@@ -181,12 +184,12 @@ jobs:
           )
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Revision 1.6 backend indicator module missing."
+            echo "ERROR: A227C backend indicator module missing."
             exit 1
           fi
 
           if [ ! -d "$PROJECT_DIR/backend/a227c" ]; then
-            echo "ERROR: A227C Python package missing."
+            echo "ERROR: A227C backend package missing."
             exit 1
           fi
 
@@ -196,11 +199,11 @@ jobs:
           echo "PYTHONPATH=$PROJECT_DIR/backend" >> "$GITHUB_ENV"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo "Verified A227C project root:"
+          echo "A227C project root verified:"
           echo "$PROJECT_DIR"
 
       # ================================================
-      # 8. VERIFY ANDROID GRADLE ROOT AND MODULE
+      # 8. VERIFY ANDROID APPLICATION
       # ================================================
 
       - name: Detect mandatory Android application
@@ -210,19 +213,11 @@ jobs:
           set -euo pipefail
 
           ANDROID_ROOT=""
-          APP_GRADLE=""
           MODULE_DIR=""
 
           while IFS= read -r -d '' candidate; do
 
-            module_dir="$(dirname "$candidate")"
-
-            # Only consider an actual Android application plugin.
-            if ! grep -Eq 'com\.android\.application' "$candidate"; then
-              continue
-            fi
-
-            current="$module_dir"
+            current="$(dirname "$candidate")"
 
             while :; do
 
@@ -230,8 +225,7 @@ jobs:
                  [ -f "$current/settings.gradle.kts" ]; then
 
                 ANDROID_ROOT="$current"
-                APP_GRADLE="$candidate"
-                MODULE_DIR="$module_dir"
+                MODULE_DIR="$(dirname "$candidate")"
                 break
               fi
 
@@ -265,18 +259,28 @@ jobs:
               -print0
           )
 
-          if [ -z "$ANDROID_ROOT" ] ||
-             [ -z "$APP_GRADLE" ] ||
-             [ -z "$MODULE_DIR" ]; then
-
-            echo "ERROR: Complete Android application not found."
-            echo "Android is mandatory for Revision 1.6."
+          if [ -z "$ANDROID_ROOT" ] || [ -z "$MODULE_DIR" ]; then
+            echo "ERROR: Mandatory Android project not detected."
             exit 1
           fi
 
-          if [ ! -f "$ANDROID_ROOT/settings.gradle" ] &&
-             [ ! -f "$ANDROID_ROOT/settings.gradle.kts" ]; then
-            echo "ERROR: Gradle settings file missing."
+          APP_GRADLE=""
+
+          if [ -f "$MODULE_DIR/build.gradle.kts" ]; then
+            APP_GRADLE="$MODULE_DIR/build.gradle.kts"
+          elif [ -f "$MODULE_DIR/build.gradle" ]; then
+            APP_GRADLE="$MODULE_DIR/build.gradle"
+          fi
+
+          if [ -z "$APP_GRADLE" ]; then
+            echo "ERROR: Android module Gradle file missing."
+            exit 1
+          fi
+
+          if ! grep -Eq \
+            'com\.android\.application|libs\.plugins\.android\.application|alias[[:space:]]*\([[:space:]]*libs\.plugins\.android\.application' \
+            "$APP_GRADLE"; then
+            echo "ERROR: Android application plugin not detected."
             exit 1
           fi
 
@@ -284,30 +288,29 @@ jobs:
 
           if [ "$MODULE_RELATIVE" = "$MODULE_DIR" ] ||
              [ -z "$MODULE_RELATIVE" ]; then
-            echo "ERROR: Cannot determine Android module path."
+            echo "ERROR: Android module is outside Gradle root."
             exit 1
           fi
 
           MODULE_TASK_PATH=":$(printf '%s' "$MODULE_RELATIVE" | tr '/' ':')"
 
           MANIFEST="$MODULE_DIR/src/main/AndroidManifest.xml"
-          SOURCE_FILES="$MODULE_DIR/src/main"
           LOGO="$MODULE_DIR/src/main/res/drawable-nodpi/a227c_logo.png"
 
-          if [ ! -f "$MANIFEST" ]; then
+          if [ ! -s "$MANIFEST" ]; then
             echo "ERROR: Android manifest missing."
             exit 1
           fi
 
-          if ! find "$SOURCE_FILES" -type f \
-            \( -name '*.kt' -o -name '*.java' \) \
+          if ! find "$MODULE_DIR/src/main" \
+            -type f \( -name '*.kt' -o -name '*.java' \) \
             -print -quit | grep -q .; then
-            echo "ERROR: Android application source files missing."
+            echo "ERROR: Android source files missing."
             exit 1
           fi
 
           if [ ! -s "$LOGO" ]; then
-            echo "ERROR: Official A227C logo missing: $LOGO"
+            echo "ERROR: Official A227C logo missing."
             find "$MODULE_DIR/src/main/res" -type f -print || true
             exit 1
           fi
@@ -316,21 +319,14 @@ jobs:
           echo "MODULE_DIR=$MODULE_DIR" >> "$GITHUB_ENV"
           echo "MODULE_TASK_PATH=$MODULE_TASK_PATH" >> "$GITHUB_ENV"
 
-          echo "android_root=$ANDROID_ROOT" >> "$GITHUB_OUTPUT"
-          echo "module_dir=$MODULE_DIR" >> "$GITHUB_OUTPUT"
-          echo "module_task_path=$MODULE_TASK_PATH" >> "$GITHUB_OUTPUT"
-
-          echo "========================================"
-          echo "ANDROID APPLICATION VERIFIED"
-          echo "========================================"
-          echo "Gradle root: $ANDROID_ROOT"
-          echo "Application module: $MODULE_DIR"
+          echo "Android project root: $ANDROID_ROOT"
+          echo "Android module: $MODULE_DIR"
           echo "Gradle module path: $MODULE_TASK_PATH"
-          echo "Manifest verified."
+          echo "Android manifest verified."
           echo "Official A227C logo verified."
 
       # ================================================
-      # 9. PYTHON 3.11
+      # 9. SET UP PYTHON 3.11
       # ================================================
 
       - name: Set up Python 3.11
@@ -339,10 +335,10 @@ jobs:
           python-version: '3.11'
 
       # ================================================
-      # 10. INSTALL PYTHON DEPENDENCIES
+      # 10. INSTALL BACKEND DEPENDENCIES
       # ================================================
 
-      - name: Install A227C backend dependencies
+      - name: Install A227C Python dependencies
         id: dependencies
         shell: bash
         run: |
@@ -363,7 +359,7 @@ jobs:
 
           for REQUIREMENTS in "${REQUIREMENTS_FILES[@]}"; do
             if [ -f "$REQUIREMENTS" ]; then
-              echo "Installing: $REQUIREMENTS"
+              echo "Installing $REQUIREMENTS"
               python -m pip install -r "$REQUIREMENTS"
             fi
           done
@@ -381,7 +377,7 @@ jobs:
           python -m pip check
 
       # ================================================
-      # 11. VERIFY PYTHON IMPORTS
+      # 11. VERIFY BACKEND IMPORTS
       # ================================================
 
       - name: Verify A227C imports
@@ -398,10 +394,10 @@ jobs:
           echo "A227C imports verified."
 
       # ================================================
-      # 12. COMPILE PYTHON SOURCE
+      # 12. COMPILE PYTHON
       # ================================================
 
-      - name: Compile A227C backend
+      - name: Compile A227C Python source
         id: compile
         shell: bash
         run: |
@@ -438,15 +434,15 @@ jobs:
           )
 
           if [ "${#TEST_FILES[@]}" -eq 0 ]; then
-            echo "ERROR: No automated Python tests found."
+            echo "ERROR: No automated test files found."
             exit 1
           fi
 
-          echo "Running ${#TEST_FILES[@]} test files."
+          echo "Found ${#TEST_FILES[@]} test files."
 
           python -m pytest -v "${TEST_FILES[@]}"
 
-          echo "A227C automated tests passed."
+          echo "A227C tests passed."
 
       # ================================================
       # 14. PACKAGE COMPLETE SOURCE
@@ -476,19 +472,19 @@ jobs:
             -x "*/.gradle/*"
 
           if [ ! -s "$OUTPUT" ]; then
-            echo "ERROR: Complete source ZIP missing."
+            echo "ERROR: Source ZIP missing."
             exit 1
           fi
 
           unzip -tq "$OUTPUT"
 
-          echo "Source package verified:"
+          echo "Source ZIP verified:"
           ls -lh "$OUTPUT"
 
           echo "package_ready=true" >> "$GITHUB_OUTPUT"
 
       # ================================================
-      # 15. VERIFY GRADLE 8.7
+      # 15. VERIFY GRADLE
       # ================================================
 
       - name: Verify Gradle 8.7
@@ -499,31 +495,26 @@ jobs:
           gradle --version
 
       # ================================================
-      # 16. VERIFY GRADLE PROJECT MODULE
+      # 16. VERIFY GRADLE MODULE
       # ================================================
 
-      - name: Verify Gradle application task
+      - name: Verify Android Gradle module
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$ANDROID_ROOT"
 
-          PROJECT_LIST="$(gradle \
+          gradle \
             --no-daemon \
             --console=plain \
-            projects)"
+            projects
 
-          printf '%s\n' "$PROJECT_LIST"
-
-          if ! printf '%s\n' "$PROJECT_LIST" |
-            grep -Fq "Project '$MODULE_TASK_PATH'"; then
-            echo "ERROR: Expected Android module is not included in Gradle settings."
-            echo "Expected module: $MODULE_TASK_PATH"
-            exit 1
-          fi
-
-          echo "Android Gradle module confirmed."
+          gradle \
+            --no-daemon \
+            --console=plain \
+            help \
+            --task "$MODULE_TASK_PATH:assembleDebug"
 
       # ================================================
       # 17. CLEAN ANDROID PROJECT
@@ -650,6 +641,7 @@ jobs:
           IMPORT_RESULT: ${{ steps.imports.outcome }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
           TEST_RESULT: ${{ steps.tests.outcome }}
+          PACKAGE_RESULT: ${{ steps.package.outcome }}
           DEBUG_RESULT: ${{ steps.debug.outcome }}
           RELEASE_RESULT: ${{ steps.release.outcome }}
         run: |
@@ -679,4 +671,13 @@ jobs:
             echo "Imports: ${IMPORT_RESULT:-not completed}"
             echo "Compilation: ${COMPILE_RESULT:-not completed}"
             echo "Automated tests: ${TEST_RESULT:-not completed}"
-            echo "Debug APK: ${DEBUG_RESULT:-not completed}
+            echo "Source packaging: ${PACKAGE_RESULT:-not completed}"
+            echo "Debug APK: ${DEBUG_RESULT:-not completed}"
+            echo "Release APK: ${RELEASE_RESULT:-not completed}"
+            echo
+            echo "Overall job status: ${JOB_STATUS:-unknown}"
+            echo
+            echo "A successful build does not establish live"
+            echo "broker connectivity or physical-device acceptance."
+            echo
+            echo "A227C is a signal-analysi
