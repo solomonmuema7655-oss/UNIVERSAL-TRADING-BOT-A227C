@@ -84,7 +84,6 @@ jobs:
 
             echo ""
             echo "ERROR: No valid A227C source ZIP was found."
-            echo ""
 
             find "$GITHUB_WORKSPACE" \
               -type f \
@@ -131,9 +130,6 @@ jobs:
             -not -path '*/.git/*' \
             -print | sort
 
-          echo ""
-          echo "A227C source extraction completed."
-
       - name: Locate A227C project root
         id: project_root
         shell: bash
@@ -159,11 +155,7 @@ jobs:
 
               CANDIDATE_ROOT="$(dirname "$BACKEND_DIR")"
 
-              echo "Candidate project root:"
-              echo "$CANDIDATE_ROOT"
-
-              if [ -d "$CANDIDATE_ROOT/backend" ] && \
-                 [ -d "$CANDIDATE_ROOT/backend/a227c" ]; then
+              if [ -d "$CANDIDATE_ROOT/backend/a227c" ]; then
 
                 PROJECT_DIR="$CANDIDATE_ROOT"
                 break
@@ -182,19 +174,13 @@ jobs:
           if [ -z "$PROJECT_DIR" ]; then
 
             echo ""
-            echo "Primary project-root search did not match."
             echo "Running fallback structural search..."
 
             while IFS= read -r backend_dir; do
 
               if [ -d "$backend_dir/a227c" ]; then
 
-                CANDIDATE_ROOT="$(dirname "$backend_dir")"
-
-                echo "Fallback candidate:"
-                echo "$CANDIDATE_ROOT"
-
-                PROJECT_DIR="$CANDIDATE_ROOT"
+                PROJECT_DIR="$(dirname "$backend_dir")"
                 break
 
               fi
@@ -212,9 +198,7 @@ jobs:
 
             echo ""
             echo "ERROR: Could not locate A227C project root."
-            echo ""
 
-            echo "Full extracted directory tree:"
             find "$SOURCE_ROOT" \
               -type d \
               -not -path '*/.git/*' \
@@ -233,7 +217,7 @@ jobs:
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Validate A227C backend source
+      - name: Validate A227C backend
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
@@ -242,10 +226,6 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "=========================================="
-          echo "Validating A227C backend"
-          echo "=========================================="
-
           test -d backend
           test -d backend/a227c
 
@@ -253,7 +233,7 @@ jobs:
           echo "A227C package: OK"
 
           echo ""
-          echo "A227C backend files:"
+          echo "A227C package contents:"
 
           find backend/a227c \
             -type f \
@@ -280,8 +260,6 @@ jobs:
             pytest-asyncio \
             httpx
 
-          echo ""
-          echo "Installed pytest version:"
           python -m pytest --version
 
       - name: Install A227C backend dependencies
@@ -299,32 +277,52 @@ jobs:
 
           if [ -f backend/requirements.txt ]; then
 
-            echo "Installing backend/requirements.txt..."
             python -m pip install -r backend/requirements.txt
 
           elif [ -f requirements.txt ]; then
 
-            echo "Installing requirements.txt..."
             python -m pip install -r requirements.txt
 
           elif [ -f backend/pyproject.toml ]; then
 
-            echo "Installing backend package..."
             python -m pip install -e backend
 
           elif [ -f pyproject.toml ]; then
 
-            echo "Installing project package..."
             python -m pip install -e .
 
           else
 
-            echo "No dependency manifest detected."
-            echo "CI test tools remain installed."
+            echo "No Python dependency manifest found."
+            echo "Continuing with CI dependencies."
 
           fi
 
-      - name: Verify Python test environment
+      - name: Configure A227C Python import path
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+
+          BACKEND_DIR="$PROJECT_DIR/backend"
+
+          echo "=========================================="
+          echo "Configuring A227C Python import path"
+          echo "=========================================="
+
+          test -d "$BACKEND_DIR"
+          test -d "$BACKEND_DIR/a227c"
+
+          echo "A227C backend:"
+          echo "$BACKEND_DIR"
+
+          echo "PYTHONPATH=$BACKEND_DIR" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "PYTHONPATH configured."
+
+      - name: Verify A227C import
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project_root.outputs.project_dir }}
@@ -334,15 +332,17 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "=========================================="
-          echo "Verifying Python environment"
+          echo "Verifying A227C Python import"
           echo "=========================================="
 
-          python --version
-          python -m pip --version
-          python -m pytest --version
+          python - <<'PY'
+          import sys
+          import a227c
 
-          echo ""
-          echo "Python environment verification passed."
+          print("Python executable:", sys.executable)
+          print("A227C package:", a227c.__file__)
+          print("A227C import: OK")
+          PY
 
       - name: Run Python compile check
         shell: bash
@@ -359,7 +359,6 @@ jobs:
 
           python -m compileall -q backend
 
-          echo ""
           echo "Python compile check passed."
 
       - name: Run A227C test suite
@@ -380,19 +379,24 @@ jobs:
             echo "Test directory detected:"
             echo "backend/tests"
 
-            python -m pytest -q backend/tests
+            python -m pytest \
+              -q \
+              backend/tests \
+              -o asyncio_default_fixture_loop_scope=function
 
           elif [ -d tests ]; then
 
             echo "Test directory detected:"
             echo "tests"
 
-            python -m pytest -q tests
+            python -m pytest \
+              -q \
+              tests \
+              -o asyncio_default_fixture_loop_scope=function
 
           else
 
             echo "WARNING: No test directory found."
-            echo "Compile validation has already passed."
 
           fi
 
@@ -441,9 +445,7 @@ jobs:
           if [ ! -f "$ANDROID_DIR/app/build.gradle" ] && \
              [ ! -f "$ANDROID_DIR/app/build.gradle.kts" ]; then
 
-            echo "ERROR: Android settings file found,"
-            echo "but app Gradle module is missing."
-
+            echo "ERROR: Android app module missing."
             exit 1
 
           fi
@@ -532,10 +534,11 @@ jobs:
 
           echo "Source archive: detected"
           echo "Source extraction: successful"
-          echo "A227C project root: $PROJECT_DIR"
+          echo "Project root: $PROJECT_DIR"
           echo "Backend source: detected"
+          echo "A227C import: verified"
           echo "Python compilation: successful"
-          echo "A227C tests: completed"
+          echo "A227C tests: successful"
 
           if [ "${{ steps.android_project.outputs.android_available }}" = "true" ]; then
 
