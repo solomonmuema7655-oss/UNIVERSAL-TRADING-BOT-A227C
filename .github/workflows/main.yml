@@ -1,346 +1,351 @@
+
 name: A227C Complete Build and Validation
 
 on:
-workflow_dispatch:
-push:
-branches:
-- main
-- master
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+      - master
 
 permissions:
-contents: read
+  contents: read
 
 concurrency:
-group: a227c-build-${{ github.ref }}
-cancel-in-progress: false
+  group: a227c-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-build:
-name: Validate A227C and Build Android APKs
-runs-on: ubuntu-22.04
-timeout-minutes: 60
-
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-
-  - name: Locate Revision 1.6 source archive
-    id: source
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      ARCHIVE="UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-EXNESS-PIPELINE-HARDENED.zip"
-
-      if [[ ! -f "$ARCHIVE" ]]; then
-        echo "::error::Required Revision 1.6 archive not found: $ARCHIVE"
-        exit 1
-      fi
-
-      mkdir -p "$GITHUB_WORKSPACE/a227c-source"
-      unzip -q "$ARCHIVE" -d "$GITHUB_WORKSPACE/a227c-source"
-
-      echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
-      echo "source_dir=$GITHUB_WORKSPACE/a227c-source" >> "$GITHUB_OUTPUT"
-
-  - name: Set up Python 3.11
-    uses: actions/setup-python@v5
-    with:
-      python-version: "3.11"
-
-  - name: Install Python validation dependencies
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      python -m pip install --upgrade pip
-      python -m pip install numpy pandas pytest
-
-  - name: Discover A227C backend and Android project
-    id: discover
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      SOURCE="$GITHUB_WORKSPACE/a227c-source"
-
-      BACKEND_FILE="$(find "$SOURCE" -type f \
-        -path '*/backend/a227c/core/indicators.py' \
-        -print -quit)"
-
-      if [[ -z "$BACKEND_FILE" ]]; then
-        echo "::error::Cannot locate backend/a227c/core/indicators.py"
-        exit 1
-      fi
-
-      PROJECT_ROOT="${BACKEND_FILE%/backend/a227c/core/indicators.py}"
-
-      SETTINGS_FILE="$(find "$PROJECT_ROOT" -type f \
-        \( -name settings.gradle -o -name settings.gradle.kts \) \
-        -print -quit)"
-
-      if [[ -z "$SETTINGS_FILE" ]]; then
-        echo "::error::Android Gradle settings file not found."
-        exit 1
-      fi
-
-      GRADLE_ROOT="$(dirname "$SETTINGS_FILE")"
-
-      APP_BUILD_FILE="$(find "$GRADLE_ROOT" -type f \
-        \( -path '*/android/app/build.gradle' -o \
-           -path '*/android/app/build.gradle.kts' -o \
-           -path '*/app/build.gradle' -o \
-           -path '*/app/build.gradle.kts' \) \
-        -print -quit)"
-
-      if [[ -z "$APP_BUILD_FILE" ]]; then
-        echo "::error::Android application module not found."
-        exit 1
-      fi
-
-      APP_DIR="$(dirname "$APP_BUILD_FILE")"
-
-      if [[ -f "$APP_DIR/src/main/AndroidManifest.xml" ]]; then
-        MANIFEST="$APP_DIR/src/main/AndroidManifest.xml"
-      else
-        echo "::error::AndroidManifest.xml missing."
-        exit 1
-      fi
-
-      LOGO="$(find "$APP_DIR/src/main/res" -type f \
-        \( -iname 'a227c_logo.png' -o -iname 'siyoma_logo.png' \) \
-        -print -quit)"
-
-      if [[ -z "$LOGO" ]]; then
-        echo "::error::Expected A227C/SIYOMA logo not found."
-        exit 1
-      fi
-
-      RELATIVE_APP="${APP_DIR#"$GRADLE_ROOT"/}"
-      MODULE_TASK=":${RELATIVE_APP//\//:}"
-
-      echo "project_root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
-      echo "gradle_root=$GRADLE_ROOT" >> "$GITHUB_OUTPUT"
-      echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-      echo "module_task=$MODULE_TASK" >> "$GITHUB_OUTPUT"
-      echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
-      echo "logo=$LOGO" >> "$GITHUB_OUTPUT"
-
-      echo "Project: $PROJECT_ROOT"
-      echo "Gradle root: $GRADLE_ROOT"
-      echo "Application module: $MODULE_TASK"
-      echo "Logo: $LOGO"
-
-  - name: Install backend requirements when provided
-    working-directory: ${{ steps.discover.outputs.project_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      REQUIREMENTS="backend/requirements.txt"
-
-      if [[ -f "$REQUIREMENTS" ]]; then
-        python -m pip install -r "$REQUIREMENTS"
-      else
-        echo "No backend requirements.txt found; base validation dependencies are installed."
-      fi
-
-  - name: Verify backend imports
-    working-directory: ${{ steps.discover.outputs.project_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
-
-      python -c "from a227c.core.indicators import *; print('Core indicators import successful')"
-      python -c "from a227c.research.exness_tick_history import *; print('Exness tick-history importer import successful')"
-
-  - name: Compile backend Python modules
-    working-directory: ${{ steps.discover.outputs.project_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-      python -m compileall -q backend/a227c
-      echo "Backend compilation successful."
-
-  - name: Run backend tests
-    working-directory: ${{ steps.discover.outputs.project_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
-
-      if [[ -d backend/tests ]]; then
-        python -m pytest backend/tests -v
-      elif [[ -d tests ]]; then
-        python -m pytest tests -v
-      else
-        echo "::error::No backend test directory found."
-        exit 1
-      fi
-
-  - name: Set up Java 17
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: "17"
-
-  - name: Set up Android SDK
-    uses: android-actions/setup-android@v3
-
-  - name: Install Android SDK platform and build tools
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      sdkmanager --install \
-        "platform-tools" \
-        "platforms;android-35" \
-        "build-tools;35.0.0"
-
-      yes | sdkmanager --licenses >/dev/null || true
-
-  - name: Set up Gradle 8.7
-    uses: gradle/actions/setup-gradle@v4
-    with:
-      gradle-version: "8.7"
-
-  - name: Verify Android project structure
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      ROOT="${{ steps.discover.outputs.gradle_root }}"
-      APP="${{ steps.discover.outputs.app_dir }}"
-      MANIFEST="${{ steps.discover.outputs.manifest }}"
-      LOGO="${{ steps.discover.outputs.logo }}"
-
-      test -f "$ROOT/gradlew" || {
-        echo "::error::Gradle wrapper missing from project root."
-        exit 1
-      }
-
-      test -f "$MANIFEST"
-      test -f "$LOGO"
-      test -f "$APP/build.gradle" || test -f "$APP/build.gradle.kts"
-
-      chmod +x "$ROOT/gradlew"
-
-      echo "Android source structure verified."
-
-  - name: Clean Android project
-    working-directory: ${{ steps.discover.outputs.gradle_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-      ./gradlew --no-daemon "${{ steps.discover.outputs.module_task }}:clean"
-
-  - name: Build Debug APK
-    working-directory: ${{ steps.discover.outputs.gradle_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-      ./gradlew --no-daemon "${{ steps.discover.outputs.module_task }}:assembleDebug"
-
-  - name: Verify Debug APK
-    id: debug
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      APP="${{ steps.discover.outputs.app_dir }}"
-      APK="$(find "$APP/build/outputs/apk/debug" -type f -name '*.apk' -print -quit)"
-
-      if [[ -z "$APK" ]]; then
-        echo "::error::Debug APK was not generated."
-        exit 1
-      fi
-
-      mkdir -p "$GITHUB_WORKSPACE/artifacts"
-      cp "$APK" "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Debug.apk"
-
-      echo "Debug APK verified: $APK"
-      sha256sum "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Debug.apk"
-
-  - name: Upload Debug APK
-    uses: actions/upload-artifact@v4
-    with:
-      name: UNIVERSAL-TRADING-BOT-A227C-Debug-APK
-      path: artifacts/UNIVERSAL-TRADING-BOT-A227C-Debug.apk
-      if-no-files-found: error
-      retention-days: 30
-
-  - name: Build Release APK
-    working-directory: ${{ steps.discover.outputs.gradle_root }}
-    shell: bash
-    run: |
-      set -euo pipefail
-      ./gradlew --no-daemon "${{ steps.discover.outputs.module_task }}:assembleRelease"
-
-  - name: Verify Release APK
-    id: release
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      APP="${{ steps.discover.outputs.app_dir }}"
-      APK="$(find "$APP/build/outputs/apk/release" -type f -name '*.apk' -print -quit)"
-
-      if [[ -z "$APK" ]]; then
-        echo "::error::Release APK was not generated."
-        exit 1
-      fi
-
-      cp "$APK" "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk"
-
-      echo "Release APK verified: $APK"
-      sha256sum "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk"
-
-  - name: Upload Release APK
-    uses: actions/upload-artifact@v4
-    with:
-      name: UNIVERSAL-TRADING-BOT-A227C-Release-APK
-      path: artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk
-      if-no-files-found: error
-      retention-days: 30
-
-  - name: Package upgraded A227C source
-    if: success()
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      cd "$GITHUB_WORKSPACE"
-      zip -qr UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-VALIDATED-SOURCE.zip a227c-source
-
-      test -s UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-VALIDATED-SOURCE.zip
-
-  - name: Upload upgraded source archive
-    if: success()
-    uses: actions/upload-artifact@v4
-    with:
-      name: UNIVERSAL-TRADING-BOT-A227C-Revision-1.6-Source
-      path: UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-VALIDATED-SOURCE.zip
-      if-no-files-found: error
-      retention-days: 30
-
-  - name: Final build report
-    if: always()
-    shell: bash
-    run: |
-      {
-        echo "# UNIVERSAL-TRADING-BOT-A227C BUILD REPORT"
-        echo
-        echo "- Revision: 1.6"
-        echo "- Runner: ubuntu-22.04"
-        echo "- Java: 17"
-        echo "- Gradle: 8.7"
-        echo "- Android SDK: API 35"
-        echo "- Python: 3.11"
-        echo "- Job status: ${{ job.status }}"
-        echo
-        echo "This application is a signal-analysis system."
-        echo "It does not execute or manage broker trades."
-      } >> "$GITHUB_STEP_SUMMARY"
+  build:
+    name: Validate A227C and Build Android APKs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate Revision 1.6 source archive
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCHIVE="UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-EXNESS-PIPELINE-HARDENED.zip"
+
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "::error::Required Revision 1.6 archive not found: $ARCHIVE"
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/a227c-source"
+          unzip -q "$ARCHIVE" -d "$GITHUB_WORKSPACE/a227c-source"
+
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "source_dir=$GITHUB_WORKSPACE/a227c-source" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas pytest
+
+      - name: Discover A227C backend and Android project
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="$GITHUB_WORKSPACE/a227c-source"
+
+          BACKEND_FILE="$(find "$SOURCE" -type f \
+            -path '*/backend/a227c/core/indicators.py' \
+            -print -quit)"
+
+          if [[ -z "$BACKEND_FILE" ]]; then
+            echo "::error::Cannot locate backend/a227c/core/indicators.py"
+            exit 1
+          fi
+
+          PROJECT_ROOT="${BACKEND_FILE%/backend/a227c/core/indicators.py}"
+
+          SETTINGS_FILE="$(find "$PROJECT_ROOT" -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit)"
+
+          if [[ -z "$SETTINGS_FILE" ]]; then
+            echo "::error::Android Gradle settings file not found."
+            exit 1
+          fi
+
+          GRADLE_ROOT="$(dirname "$SETTINGS_FILE")"
+
+          APP_BUILD_FILE="$(find "$GRADLE_ROOT" -type f \
+            \( -path '*/android/app/build.gradle' -o \
+               -path '*/android/app/build.gradle.kts' -o \
+               -path '*/app/build.gradle' -o \
+               -path '*/app/build.gradle.kts' \) \
+            -print -quit)"
+
+          if [[ -z "$APP_BUILD_FILE" ]]; then
+            echo "::error::Android application module not found."
+            exit 1
+          fi
+
+          APP_DIR="$(dirname "$APP_BUILD_FILE")"
+
+          if [[ -f "$APP_DIR/src/main/AndroidManifest.xml" ]]; then
+            MANIFEST="$APP_DIR/src/main/AndroidManifest.xml"
+          else
+            echo "::error::AndroidManifest.xml missing."
+            exit 1
+          fi
+
+          LOGO="$(find "$APP_DIR/src/main/res" -type f \
+            \( -iname 'a227c_logo.png' -o -iname 'siyoma_logo.png' \) \
+            -print -quit)"
+
+          if [[ -z "$LOGO" ]]; then
+            echo "::error::Expected A227C/SIYOMA logo not found."
+            exit 1
+          fi
+
+          RELATIVE_APP="${APP_DIR#"$GRADLE_ROOT"/}"
+          MODULE_TASK=":${RELATIVE_APP//\//:}"
+
+          echo "project_root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+          echo "gradle_root=$GRADLE_ROOT" >> "$GITHUB_OUTPUT"
+          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          echo "module_task=$MODULE_TASK" >> "$GITHUB_OUTPUT"
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          echo "logo=$LOGO" >> "$GITHUB_OUTPUT"
+
+          echo "Project: $PROJECT_ROOT"
+          echo "Gradle root: $GRADLE_ROOT"
+          echo "Application module: $MODULE_TASK"
+          echo "Logo: $LOGO"
+
+      - name: Install backend requirements when provided
+        working-directory: ${{ steps.discover.outputs.project_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUIREMENTS="backend/requirements.txt"
+
+          if [[ -f "$REQUIREMENTS" ]]; then
+            python -m pip install -r "$REQUIREMENTS"
+          else
+            echo "No backend requirements.txt found; base validation dependencies are installed."
+          fi
+
+      - name: Verify backend imports
+        working-directory: ${{ steps.discover.outputs.project_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
+
+          python -c "from a227c.core.indicators import *; print('Core indicators import successful')"
+          python -c "from a227c.research.exness_tick_history import *; print('Exness tick-history importer import successful')"
+
+      - name: Compile backend Python modules
+        working-directory: ${{ steps.discover.outputs.project_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend/a227c
+          echo "Backend compilation successful."
+
+      - name: Run backend tests
+        working-directory: ${{ steps.discover.outputs.project_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
+
+          if [[ -d backend/tests ]]; then
+            python -m pytest backend/tests -v
+          elif [[ -d tests ]]; then
+            python -m pytest tests -v
+          else
+            echo "::error::No backend test directory found."
+            exit 1
+          fi
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK platform and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify Android project structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="${{ steps.discover.outputs.gradle_root }}"
+          APP="${{ steps.discover.outputs.app_dir }}"
+          MANIFEST="${{ steps.discover.outputs.manifest }}"
+          LOGO="${{ steps.discover.outputs.logo }}"
+
+          test -f "$ROOT/gradlew" || {
+            echo "::error::Gradle wrapper missing from project root."
+            exit 1
+          }
+
+          test -f "$MANIFEST"
+          test -f "$LOGO"
+          test -f "$APP/build.gradle" || test -f "$APP/build.gradle.kts"
+
+          chmod +x "$ROOT/gradlew"
+
+          echo "Android source structure verified."
+
+      - name: Clean Android project
+        working-directory: ${{ steps.discover.outputs.gradle_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon "${{ steps.discover.outputs.module_task }}:clean"
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.discover.outputs.gradle_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon "${{ steps.discover.outputs.module_task }}:assembleDebug"
+
+      - name: Verify Debug APK
+        id: debug
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="${{ steps.discover.outputs.app_dir }}"
+          APK="$(find "$APP/build/outputs/apk/debug" -type f -name '*.apk' -print -quit)"
+
+          if [[ -z "$APK" ]]; then
+            echo "::error::Debug APK was not generated."
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp "$APK" "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Debug.apk"
+
+          echo "Debug APK verified: $APK"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Debug.apk"
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: UNIVERSAL-TRADING-BOT-A227C-Debug-APK
+          path: artifacts/UNIVERSAL-TRADING-BOT-A227C-Debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build Release APK
+        working-directory: ${{ steps.discover.outputs.gradle_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon "${{ steps.discover.outputs.module_task }}:assembleRelease"
+
+      - name: Verify Release APK
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="${{ steps.discover.outputs.app_dir }}"
+          APK="$(find "$APP/build/outputs/apk/release" -type f -name '*.apk' -print -quit)"
+
+          if [[ -z "$APK" ]]; then
+            echo "::error::Release APK was not generated."
+            exit 1
+          fi
+
+          cp "$APK" "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk"
+
+          echo "Release APK verified: $APK"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk"
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: UNIVERSAL-TRADING-BOT-A227C-Release-APK
+          path: artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Package upgraded A227C source
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+          zip -qr UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-VALIDATED-SOURCE.zip a227c-source
+
+          test -s UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-VALIDATED-SOURCE.zip
+
+      - name: Upload upgraded source archive
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UNIVERSAL-TRADING-BOT-A227C-Revision-1.6-Source
+          path: UNIVERSAL-TRADING-BOT-A227C-REVISION-1.6-VALIDATED-SOURCE.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final build report
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "# UNIVERSAL-TRADING-BOT-A227C BUILD REPORT"
+            echo
+            echo "- Revision: 1.6"
+            echo "- Runner: ubuntu-22.04"
+            echo "- Java: 17"
+            echo "- Gradle: 8.7"
+            echo "- Android SDK: API 35"
+            echo "- Python: 3.11"
+            echo "- Job status: ${{ job.status }}"
+            echo
+            echo "This application is a signal-analysis system."
+            echo "It does not execute or manage broker trades."
+          } >> "$GITHUB_STEP_SUMMARY"
+          
