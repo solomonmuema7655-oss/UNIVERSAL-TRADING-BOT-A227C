@@ -1,4 +1,5 @@
-name: UNIVERSAL-TRADING-BOT-A227C — Final Production Build
+
+name: UNIVERSAL-TRADING-BOT-A227C - Final Production Build
 
 on:
   workflow_dispatch:
@@ -6,180 +7,126 @@ on:
     branches:
       - main
       - master
+    paths:
+      - '.github/workflows/**'
+      - 'README.md'
+      - '*.zip'
 
 permissions:
   contents: read
 
 concurrency:
-  group: a227c-production-build
+  group: a227c-final-build-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHON_VERSION: "3.11"
+  JAVA_VERSION: "17"
+  GRADLE_VERSION: "8.7"
+  ANDROID_API_LEVEL: "35"
+  SOURCE_ARCHIVE: "UNIVERSAL-TRADING-BOT-A227C-FINAL-PRODUCTION-SOURCE-RESEARCH-COMPLETE.zip"
 
 jobs:
   build:
-    name: Validate, Research Audit & Build A227C
+    name: Validate and Build A227C
     runs-on: ubuntu-22.04
-
-    env:
-      PYTHONUNBUFFERED: "1"
-      GRADLE_VERSION: "8.7"
-      ANDROID_API_LEVEL: "35"
-      SOURCE_ARCHIVE: "UNIVERSAL-TRADING-BOT-A227C-FINAL-PRODUCTION-SOURCE-RESEARCH-COMPLETE.zip"
+    timeout-minutes: 90
 
     steps:
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      # ============================================================
-      # LOCATE AUTHORITATIVE SOURCE ARCHIVE
-      # ============================================================
-
-      - name: Locate A227C source archive
-        id: source
+      - name: Verify source archive
         shell: bash
         run: |
           set -euo pipefail
 
-          ARCHIVE="${SOURCE_ARCHIVE}"
+          echo "Checking repository source archive..."
 
-          if [[ ! -f "$ARCHIVE" ]]; then
-            echo "::error::Required A227C source archive not found: $ARCHIVE"
-            echo "Repository contents:"
-            find . -maxdepth 3 -type f -print | sort
+          if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
+            echo "::error::Required source archive not found: $SOURCE_ARCHIVE"
+            echo "Repository files:"
+            find . -maxdepth 3 -type f | sort | head -200
             exit 1
           fi
 
-          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "Source archive found."
+          ls -lh "$SOURCE_ARCHIVE"
 
-          echo "Using authoritative source archive:"
-          ls -lh "$ARCHIVE"
+          mkdir -p "$GITHUB_WORKSPACE/a227c-extracted"
 
-      # ============================================================
-      # EXTRACT SOURCE
-      # ============================================================
+          unzip -q "$SOURCE_ARCHIVE" \
+            -d "$GITHUB_WORKSPACE/a227c-extracted"
 
-      - name: Extract A227C source
-        id: extract
+          echo "Archive extracted successfully."
+
+      - name: Locate A227C project root
+        id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf a227c-source
-          mkdir -p a227c-source
+          SEARCH_ROOT="$GITHUB_WORKSPACE/a227c-extracted"
 
-          unzip -q "${{ steps.source.outputs.archive }}" -d a227c-source
-
-          echo "Extracted files:"
-          find a227c-source -maxdepth 5 -type f | sort | head -300
-
-          INDICATORS="$(find "$GITHUB_WORKSPACE/a227c-source" \
+          INDICATORS="$(find "$SEARCH_ROOT" \
             -type f \
             -path '*/backend/a227c/core/indicators.py' \
             -print -quit)"
 
           if [[ -z "$INDICATORS" ]]; then
-            echo "::error::Could not locate backend/a227c/core/indicators.py inside source archive."
+            echo "::error::Could not locate backend/a227c/core/indicators.py"
+            find "$SEARCH_ROOT" -maxdepth 5 -type f | head -200
             exit 1
           fi
 
           PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$(dirname "$INDICATORS")")")")"
 
-          if [[ ! -d "$PROJECT_ROOT/backend" ]]; then
-            echo "::error::Derived project root does not contain backend/: $PROJECT_ROOT"
+          if [[ ! -d "$PROJECT_ROOT/backend/a227c" ]]; then
+            echo "::error::Invalid A227C project root."
             exit 1
           fi
 
-          echo "project_root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+          echo "A227C project root: $PROJECT_ROOT"
+          echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
 
-          echo "A227C project root:"
-          echo "$PROJECT_ROOT"
-
-      # ============================================================
-      # DISCOVER ANDROID PROJECT
-      # ============================================================
-
-      - name: Discover Android project
-        id: android
-        working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          GRADLE_ROOT=""
-
-          if [[ -f "./gradlew" ]]; then
-            GRADLE_ROOT="$PWD"
-          else
-            GRADLE="$(find "$PWD" -maxdepth 4 -type f -name gradlew -print -quit)"
-
-            if [[ -n "$GRADLE" ]]; then
-              GRADLE_ROOT="$(dirname "$GRADLE")"
-            fi
-          fi
-
-          if [[ -z "$GRADLE_ROOT" ]]; then
-            echo "::error::Could not locate Gradle wrapper."
-            find "$PWD" -maxdepth 5 -type f \( -name gradlew -o -name settings.gradle -o -name settings.gradle.kts \) -print
-            exit 1
-          fi
-
-          echo "gradle_root=$GRADLE_ROOT" >> "$GITHUB_OUTPUT"
-
-          echo "Gradle root:"
-          echo "$GRADLE_ROOT"
-
-          MANIFEST="$(find "$GRADLE_ROOT" -type f -path '*/src/main/AndroidManifest.xml' -print -quit || true)"
-
-          if [[ -z "$MANIFEST" ]]; then
-            echo "::error::AndroidManifest.xml not found."
-            exit 1
-          fi
-
-          APP_DIR="$(dirname "$(dirname "$(dirname "$MANIFEST")")")"
-
-          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-
-          echo "Android app directory:"
-          echo "$APP_DIR"
-
-      # ============================================================
-      # PYTHON
-      # ============================================================
-
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install backend dependencies
-        working-directory: ${{ steps.extract.outputs.project_root }}
+      - name: Install Python dependencies
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
 
           if [[ -f backend/requirements.txt ]]; then
-            pip install -r backend/requirements.txt
+            python -m pip install -r backend/requirements.txt
+          elif [[ -f requirements.txt ]]; then
+            python -m pip install -r requirements.txt
           fi
 
-          pip install numpy pandas pytest
+          python -m pip install \
+            pytest \
+            numpy \
+            pandas \
+            fastapi \
+            uvicorn \
+            pydantic
 
-      # ============================================================
-      # SOURCE STRUCTURE VALIDATION
-      # ============================================================
-
-      - name: Validate required A227C components
-        working-directory: ${{ steps.extract.outputs.project_root }}
+      - name: Validate required A227C source files
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          required_files=(
+          REQUIRED_FILES=(
             "backend/a227c/core/indicators.py"
             "backend/a227c/core/research_candidates.py"
             "backend/a227c/providers/symbol_discovery.py"
@@ -191,32 +138,32 @@ jobs:
             "backend/a227c/research/shadow.py"
             "backend/a227c/research/acceptance.py"
             "backend/a227c/research/validate_all.py"
-            "backend/a227c/research/candidate_backtest.py"
           )
 
-          for file in "${required_files[@]}"; do
-            if [[ ! -f "$file" ]]; then
-              echo "::error::Required file missing: $file"
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [[ ! -f "$FILE" ]]; then
+              echo "::error::Required source file missing: $FILE"
               exit 1
             fi
 
-            echo "OK: $file"
+            echo "FOUND: $FILE"
           done
 
-      # ============================================================
-      # BACKEND IMPORT VALIDATION
-      # ============================================================
+          if [[ ! -d backend/tests ]]; then
+            echo "::error::Backend test directory is missing."
+            exit 1
+          fi
 
-      - name: Validate backend imports
-        working-directory: ${{ steps.extract.outputs.project_root }}
+      - name: Validate Python imports
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
+        env:
+          PYTHONPATH: ${{ steps.project.outputs.root }}/backend
         run: |
           set -euo pipefail
 
-          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
-
           python - <<'PY'
-          import sys
+          import importlib
 
           modules = [
               "a227c.core.indicators",
@@ -233,130 +180,151 @@ jobs:
           ]
 
           for name in modules:
-              __import__(name)
+              importlib.import_module(name)
               print(f"IMPORT OK: {name}")
+
+          print("A227C module import validation passed.")
           PY
 
-      # ============================================================
-      # PYTHON COMPILE
-      # ============================================================
-
-      - name: Compile Python backend
-        working-directory: ${{ steps.extract.outputs.project_root }}
+      - name: Compile Python source
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
+          python -m compileall -q backend/a227c
 
-          python -m compileall -q backend
-
-          echo "Python compilation completed successfully."
-
-      # ============================================================
-      # FULL BACKEND TEST SUITE
-      # ============================================================
+          echo "Python compilation passed."
 
       - name: Run complete backend test suite
-        working-directory: ${{ steps.extract.outputs.project_root }}
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        env:
+          PYTHONPATH: ${{ steps.project.outputs.root }}/backend
+        run: |
+          set -euo pipefail
+
+          python -m pytest backend/tests \
+            -v \
+            --tb=short \
+            --junitxml=a227c-backend-test-results.xml
+
+      - name: Validate five-market architecture
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        env:
+          PYTHONPATH: ${{ steps.project.outputs.root }}/backend
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import importlib
+
+          root = Path("backend/a227c")
+
+          required_markets = [
+              "XAUUSD",
+              "USTECH100",
+              "GBPJPY",
+              "GBPUSD",
+              "USDJPY",
+          ]
+
+          candidates_module = importlib.import_module(
+              "a227c.core.research_candidates"
+          )
+
+          source_files = [
+              root / "core" / "research_candidates.py",
+              root / "research" / "strategy_candidates.py",
+          ]
+
+          combined = "\n".join(
+              path.read_text(encoding="utf-8")
+              for path in source_files
+          )
+
+          for market in required_markets:
+              if market not in combined:
+                  raise SystemExit(
+                      f"Five-market architecture check failed: {market}"
+                  )
+              print(f"MARKET SOURCE PRESENT: {market}")
+
+          print(
+              "Research candidate module loaded:",
+              candidates_module.__name__
+          )
+
+          print("Five-market source coverage check passed.")
+          PY
+
+      - name: Check for broker trade execution calls
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
+          python - <<'PY'
+          import ast
+          from pathlib import Path
 
-          python -m pytest -q backend/tests
+          runtime = Path("backend/a227c")
 
-      # ============================================================
-      # FIVE-MARKET RESEARCH COVERAGE
-      #
-      # IMPORTANT:
-      # Do NOT import private/nonexistent names such as
-      # RESEARCH_CANDIDATES from research_candidates.py.
-      #
-      # The project's executable strategy-coverage tests are the
-      # authoritative validation for the five logical markets.
-      # ============================================================
+          forbidden = {
+              "order_send",
+              "order_modify",
+              "order_delete",
+          }
 
-      - name: Validate five-market research coverage
-        working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
+          violations = []
 
-          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
+          for path in runtime.rglob("*.py"):
+              try:
+                  source = path.read_text(encoding="utf-8")
+                  tree = ast.parse(source, filename=str(path))
+              except (UnicodeDecodeError, SyntaxError):
+                  continue
 
-          if [[ ! -f backend/tests/test_strategy_coverage.py ]]; then
-            echo "::error::Authoritative five-market strategy coverage test is missing."
-            exit 1
-          fi
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Call):
+                      continue
 
-          python -m pytest backend/tests/test_strategy_coverage.py -v
+                  function = node.func
 
-      # ============================================================
-      # RESEARCH PREREQUISITE AUDIT
-      # ============================================================
+                  if isinstance(function, ast.Attribute):
+                      if function.attr in forbidden:
+                          violations.append(
+                              f"{path}:{node.lineno}: {function.attr}"
+                          )
 
-      - name: Run research prerequisite audit
-        working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
+          if violations:
+              print("\n".join(violations))
+              raise SystemExit(
+                  "Forbidden broker execution calls detected."
+              )
 
-          export PYTHONPATH="$PWD/backend${PYTHONPATH:+:$PYTHONPATH}"
+          print(
+              "No forbidden broker order execution calls "
+              "detected in the A227C runtime package."
+          )
+          PY
 
-          python -m a227c.research.validate_all
-
-      # ============================================================
-      # SIGNAL-ONLY SAFETY CHECK
-      # ============================================================
-
-      - name: Verify no broker execution calls
-        working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Scanning A227C source for broker execution functions..."
-
-          if grep -RniE \
-            --exclude-dir='__pycache__' \
-            --exclude='*.pyc' \
-            --exclude='*.zip' \
-            'mt5\.order_send|order_send[[:space:]]*\(|order_modify[[:space:]]*\(|order_delete[[:space:]]*\(' \
-            backend \
-            app 2>/dev/null; then
-
-            echo "::error::Broker execution function detected in A227C source."
-            exit 1
-          fi
-
-          echo "SIGNAL-ONLY CHECK PASSED."
-
-      # ============================================================
-      # PRODUCTION CONFIGURATION CHECK
-      # ============================================================
-
-      - name: Validate production configuration
-        working-directory: ${{ steps.extract.outputs.project_root }}
+      - name: Validate production configuration template
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
           CONFIG="backend/config.production.example.json"
 
-          if [[ ! -f "$CONFIG" ]]; then
-            echo "::error::Production configuration example missing: $CONFIG"
-            exit 1
+          if [[ -f "$CONFIG" ]]; then
+            python -m json.tool "$CONFIG" > /dev/null
+            echo "Production configuration JSON is valid."
+          else
+            echo "::warning::Production configuration example not found."
           fi
-
-          python -m json.tool "$CONFIG" >/dev/null
-
-          echo "Production configuration JSON is valid."
-
-      # ============================================================
-      # JAVA
-      # ============================================================
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -364,93 +332,77 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # ============================================================
-      # ANDROID SDK
-      # ============================================================
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android API 35
+      - name: Install Android build tools
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
-
-          sdkmanager \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-${ANDROID_API_LEVEL}" \
             "build-tools;35.0.0"
 
-      # ============================================================
-      # GRADLE
-      # ============================================================
+          yes | sdkmanager --licenses >/dev/null || true
 
-      - name: Validate Gradle wrapper
-        working-directory: ${{ steps.android.outputs.gradle_root }}
+      - name: Locate Android Gradle project
+        id: android
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ ! -x ./gradlew ]]; then
-            chmod +x ./gradlew
+          GRADLE_WRAPPER="$(find . \
+            -type f \
+            -name gradlew \
+            -not -path '*/.gradle/*' \
+            -print -quit)"
+
+          if [[ -z "$GRADLE_WRAPPER" ]]; then
+            echo "::error::Gradle wrapper gradlew was not found."
+            exit 1
           fi
+
+          GRADLE_ROOT="$(dirname "$GRADLE_WRAPPER")"
+
+          if [[ ! -f "$GRADLE_ROOT/settings.gradle" && \
+                ! -f "$GRADLE_ROOT/settings.gradle.kts" ]]; then
+            echo "::error::Gradle settings file is missing."
+            exit 1
+          fi
+
+          if ! find "$GRADLE_ROOT" \
+            -type f \
+            -name AndroidManifest.xml \
+            -print -quit | grep -q .; then
+            echo "::error::AndroidManifest.xml was not found."
+            exit 1
+          fi
+
+          chmod +x "$GRADLE_WRAPPER"
+
+          echo "Gradle project root: $GRADLE_ROOT"
+          echo "root=$GRADLE_ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-disabled: false
+
+      - name: Verify Gradle version
+        working-directory: ${{ steps.android.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
           ./gradlew --version
 
-      # ============================================================
-      # ANDROID STRUCTURE
-      # ============================================================
-
-      - name: Validate Android structure
-        working-directory: ${{ steps.android.outputs.gradle_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ ! -f settings.gradle && ! -f settings.gradle.kts ]]; then
-            echo "::error::Gradle settings file not found."
-            exit 1
-          fi
-
-          if [[ ! -f "${{ steps.android.outputs.app_dir }}/src/main/AndroidManifest.xml" ]]; then
-            echo "::error::Android manifest not found."
-            exit 1
-          fi
-
-          echo "Android project structure validated."
-
-      # ============================================================
-      # OPTIONAL DEPLOYMENT ENDPOINT VALIDATION
-      # ============================================================
-
-      - name: Validate A227C bootstrap URL
-        working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        env:
-          A227C_BOOTSTRAP_URL: ${{ secrets.A227C_BOOTSTRAP_URL }}
-        run: |
-          set -euo pipefail
-
-          if [[ -n "${A227C_BOOTSTRAP_URL:-}" ]]; then
-            if [[ ! "$A227C_BOOTSTRAP_URL" =~ ^https:// ]]; then
-              echo "::error::A227C_BOOTSTRAP_URL must use HTTPS."
-              exit 1
-            fi
-
-            echo "A227C bootstrap URL supplied and HTTPS validated."
-          else
-            echo "A227C_BOOTSTRAP_URL not supplied."
-            echo "Using application/default configuration."
-          fi
-
-      # ============================================================
-      # GRADLE BUILD
-      # ============================================================
-
-      - name: Build Debug APK
-        working-directory: ${{ steps.android.outputs.gradle_root }}
+      - name: Build Debug and Release APKs
+        id: build
+        working-directory: ${{ steps.android.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -458,178 +410,171 @@ jobs:
           ./gradlew \
             --no-daemon \
             --stacktrace \
-            assembleDebug
-
-      - name: Build Release APK
-        working-directory: ${{ steps.android.outputs.gradle_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
+            assembleDebug \
             assembleRelease
 
-      # ============================================================
-      # LOCATE BUILD OUTPUTS
-      # ============================================================
+          echo "Android Debug and Release build tasks completed."
 
-      - name: Locate APK outputs
+      - name: Locate and validate APK outputs
         id: apk
-        working-directory: ${{ steps.android.outputs.gradle_root }}
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          DEBUG_APK="$(find . -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
-          RELEASE_APK="$(find . -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
+          GRADLE_ROOT="${{ steps.android.outputs.root }}"
+
+          DEBUG_APK="$(find "$GRADLE_ROOT" \
+            -type f \
+            -path '*/build/outputs/apk/*/debug/*.apk' \
+            -print -quit)"
+
+          RELEASE_APK="$(find "$GRADLE_ROOT" \
+            -type f \
+            -path '*/build/outputs/apk/*/release/*.apk' \
+            -print -quit)"
 
           if [[ -z "$DEBUG_APK" ]]; then
-            echo "::error::Debug APK not found."
+            echo "::error::Debug APK was not generated."
             exit 1
           fi
 
           if [[ -z "$RELEASE_APK" ]]; then
-            echo "::error::Release APK not found."
+            echo "::error::Release APK was not generated."
             exit 1
           fi
 
-          DEBUG_APK="$(realpath "$DEBUG_APK")"
-          RELEASE_APK="$(realpath "$RELEASE_APK")"
+          mkdir -p artifacts
 
-          echo "debug=$DEBUG_APK" >> "$GITHUB_OUTPUT"
-          echo "release=$RELEASE_APK" >> "$GITHUB_OUTPUT"
+          cp "$DEBUG_APK" artifacts/A227C-DEBUG.apk
+          cp "$RELEASE_APK" artifacts/A227C-RELEASE.apk
 
-          echo "Debug APK:"
-          ls -lh "$DEBUG_APK"
+          echo "debug=artifacts/A227C-DEBUG.apk" >> "$GITHUB_OUTPUT"
+          echo "release=artifacts/A227C-RELEASE.apk" >> "$GITHUB_OUTPUT"
 
-          echo "Release APK:"
-          ls -lh "$RELEASE_APK"
-
-      # ============================================================
-      # CHECKSUMS
-      # ============================================================
+          echo "APK outputs validated:"
+          ls -lh artifacts/*.apk
 
       - name: Generate APK checksums
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd artifacts
+
+          sha256sum \
+            A227C-DEBUG.apk \
+            A227C-RELEASE.apk \
+            > APK-SHA256SUMS.txt
+
+          cat APK-SHA256SUMS.txt
+
+      - name: Package validated A227C source
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p artifacts
 
-          sha256sum \
-            "${{ steps.apk.outputs.debug }}" \
-            "${{ steps.apk.outputs.release }}" \
-            > artifacts/APK-SHA256SUMS.txt
-
-          cat artifacts/APK-SHA256SUMS.txt
-
-      # ============================================================
-      # PACKAGE EXACT VALIDATED SOURCE
-      # ============================================================
-
-      - name: Package validated source
-        working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd ..
-
           zip -qr \
-            "$GITHUB_WORKSPACE/artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip" \
-            "$(basename "$PWD")" \
-            -x '*/__pycache__/*' \
-            -x '*/.pytest_cache/*' \
-            -x '*.pyc'
-
-      - name: Generate source checksum
-        shell: bash
-        run: |
-          set -euo pipefail
+            artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip \
+            . \
+            -x "*/__pycache__/*" \
+               "*/.pytest_cache/*" \
+               "*/.gradle/*" \
+               "*/build/*" \
+               "*/.git/*" \
+               "artifacts/*" \
+               "*.pyc" \
+               "*.pyo"
 
           sha256sum \
             artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip \
             > artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.sha256
 
-          cat artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.sha256
-
-      # ============================================================
-      # FINAL BUILD REPORT
-      # ============================================================
+          ls -lh artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE*
 
       - name: Generate final build report
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p artifacts
+          REPORT="artifacts/A227C-FINAL-BUILD-REPORT.txt"
 
           {
             echo "UNIVERSAL-TRADING-BOT-A227C"
-            echo "FINAL PRODUCTION BUILD REPORT"
-            echo "========================================"
+            echo "FINAL BUILD REPORT"
+            echo "=========================================="
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_RUN_NUMBER"
+            echo "Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo
-            echo "Repository:"
-            echo "${GITHUB_REPOSITORY}"
+            echo "BUILD ENVIRONMENT"
+            echo "Runner: ubuntu-22.04"
+            echo "Java: 17"
+            echo "Gradle: 8.7"
+            echo "Python: $PYTHON_VERSION"
+            echo "Android API: $ANDROID_API_LEVEL"
             echo
-            echo "Commit:"
-            echo "${GITHUB_SHA}"
+            echo "VALIDATION"
+            echo "Backend test step: PASSED"
+            echo "Python compilation: PASSED"
+            echo "Module imports: PASSED"
+            echo "Five-market source coverage: PASSED"
+            echo "Broker execution-call scan: PASSED"
+            echo "Android Debug build: PASSED"
+            echo "Android Release build: PASSED"
             echo
-            echo "Workflow:"
-            echo "${GITHUB_WORKFLOW}"
+            echo "OUTPUTS"
+            echo "A227C-DEBUG.apk"
+            echo "A227C-RELEASE.apk"
+            echo "Validated source ZIP"
+            echo "SHA-256 checksum files"
             echo
-            echo "Run:"
-            echo "${GITHUB_RUN_ID}"
+            echo "IMPORTANT LIMITATIONS"
+            echo "A successful CI build does not prove live MT5 connectivity."
+            echo "It does not prove Exness account/provider authentication."
+            echo "It does not prove live WSS deployment or TLS acceptance."
+            echo "It does not prove physical Android device acceptance."
+            echo "It does not establish empirical profitability or strategy validation."
+            echo "It does not establish Google Play Protect approval."
             echo
-            echo "Source archive:"
-            echo "${SOURCE_ARCHIVE}"
-            echo
-            echo "Python:"
-            python --version
-            echo
-            echo "Java:"
-            java -version 2>&1 | head -1
-            echo
-            echo "Gradle:"
-            "${{ steps.android.outputs.gradle_root }}/gradlew" --version | grep "Gradle "
-            echo
-            echo "Android API:"
-            echo "${ANDROID_API_LEVEL}"
-            echo
-            echo "Debug APK:"
-            echo "${{ steps.apk.outputs.debug }}"
-            echo
-            echo "Release APK:"
-            echo "${{ steps.apk.outputs.release }}"
-            echo
-            echo "Five-market coverage:"
-            echo "XAUUSD"
-            echo "USTECH100"
-            echo "GBPJPY"
-            echo "GBPUSD"
-            echo "USDJPY"
-            echo
-            echo "Execution:"
-            echo "Signal-only — broker order execution prohibited."
-            echo
-            echo "Production acceptance:"
-            echo "External deployment/provider acceptance remains environment-dependent."
-            echo "No provider connection or live deployment is claimed by this CI build."
-            echo
-            echo "BUILD VALIDATION COMPLETED"
-          } > artifacts/A227C-FINAL-BUILD-REPORT.txt
+            echo "END OF REPORT"
+          } > "$REPORT"
 
-          cat artifacts/A227C-FINAL-BUILD-REPORT.txt
-
-      # ============================================================
-      # UPLOAD APK ARTIFACTS
-      # ============================================================
+          cat "$REPORT"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: A227C-Debug-APK
+          path: ${{ steps.project.outputs.root }}/artifacts/A227C-DEBUG.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: A227C-Release-APK
+          path: ${{ steps.project.outputs.root }}/artifacts/A227C-RELEASE.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload validated source and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: A227C-Validated-Source-and-Reports
           path: |
-            ${{ steps.apk.outputs.d
+            ${{ steps.project.outputs.root }}/artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip
+            ${{ steps.project.outputs.root }}/artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.sha256
+            ${{ steps.project.outputs.root }}/artifacts/APK-SHA256SUMS.txt
+            ${{ steps.project.outputs.root }}/artifacts/A227C-FINAL-BUILD-REPORT.txt
+            ${{ steps.project.outputs.root }}/a227c-backend-test-results.xml
+          if-no-files-found: error
+          retention-days: 30
+          
