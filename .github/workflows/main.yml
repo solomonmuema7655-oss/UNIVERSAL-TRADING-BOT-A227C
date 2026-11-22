@@ -8,9 +8,9 @@ on:
       - main
       - master
     paths:
-      - '.github/workflows/**'
-      - 'README.md'
-      - '*.zip'
+      - ".github/workflows/**"
+      - "README.md"
+      - "*.zip"
 
 permissions:
   contents: read
@@ -22,8 +22,9 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
   PYTHON_VERSION: "3.11"
-  GRADLE_VERSION: "8.7"
+  GRADLE_VERSION: "8.9"
   ANDROID_API_LEVEL: "35"
+  ANDROID_BUILD_TOOLS: "35.0.0"
   SOURCE_ARCHIVE: "UNIVERSAL-TRADING-BOT-A227C-FINAL-PRODUCTION-SOURCE-RESEARCH-COMPLETE.zip"
 
 jobs:
@@ -45,14 +46,15 @@ jobs:
 
           if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
             echo "::error::Source archive not found: $SOURCE_ARCHIVE"
-            find . -maxdepth 3 -type f | sort
+            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -print | sort
             exit 1
           fi
 
+          unzip -tq "$SOURCE_ARCHIVE"
           mkdir -p "$GITHUB_WORKSPACE/a227c-extracted"
           unzip -q "$SOURCE_ARCHIVE" -d "$GITHUB_WORKSPACE/a227c-extracted"
 
-          echo "Source archive extracted successfully."
+          echo "Source archive integrity check passed."
 
       - name: Locate A227C project root
         id: project
@@ -62,47 +64,45 @@ jobs:
 
           SEARCH_ROOT="$GITHUB_WORKSPACE/a227c-extracted"
 
-          INDICATOR="$(find "$SEARCH_ROOT" \
-            -type f \
+          INDICATOR="$(find "$SEARCH_ROOT" -type f \
             -path '*/backend/a227c/core/indicators.py' \
             -print -quit)"
 
           if [[ -z "$INDICATOR" ]]; then
             echo "::error::A227C backend source was not found."
-            find "$SEARCH_ROOT" -maxdepth 6 -type f | head -200
+            find "$SEARCH_ROOT" -maxdepth 7 -type f -print | sort | head -250
             exit 1
           fi
 
           PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$(dirname "$INDICATOR")")")")"
 
           if [[ ! -d "$PROJECT_ROOT/backend/a227c" ]]; then
-            echo "::error::Invalid project root: $PROJECT_ROOT"
+            echo "::error::Invalid A227C project root."
             exit 1
           fi
 
           echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
-          echo "Located project: $PROJECT_ROOT"
+          echo "Located A227C project: $PROJECT_ROOT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install backend dependencies
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          python -m pip install --upgrade pip setuptools wheel
-
-          if [[ -f backend/requirements.txt ]]; then
-            python -m pip install -r backend/requirements.txt
-          elif [[ -f requirements.txt ]]; then
-            python -m pip install -r requirements.txt
+          if [[ ! -f backend/requirements.txt ]]; then
+            echo "::error::backend/requirements.txt is missing."
+            exit 1
           fi
 
-          python -m pip install pytest numpy pandas fastapi uvicorn pydantic
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r backend/requirements.txt
+          python -m pip install pytest
 
       - name: Validate required source files
         working-directory: ${{ steps.project.outputs.root }}
@@ -126,14 +126,14 @@ jobs:
 
           for FILE in "${REQUIRED_FILES[@]}"; do
             if [[ ! -f "$FILE" ]]; then
-              echo "::error::Missing required file: $FILE"
+              echo "::error::Required source file is missing: $FILE"
               exit 1
             fi
             echo "FOUND: $FILE"
           done
 
           if [[ ! -d backend/tests ]]; then
-            echo "::error::Backend tests directory missing."
+            echo "::error::Backend tests directory is missing."
             exit 1
           fi
 
@@ -166,7 +166,7 @@ jobs:
               importlib.import_module(module)
               print("IMPORT OK:", module)
 
-          print("All required imports passed.")
+          print("All required backend imports passed.")
           PY
 
       - name: Compile Python source
@@ -175,9 +175,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m compileall -q backend/a227c
-          echo "Python compilation passed."
+          echo "Python source compilation passed."
 
-      - name: Run complete backend tests
+      - name: Run complete backend test suite
         working-directory: ${{ steps.project.outputs.root }}
         env:
           PYTHONPATH: ${{ steps.project.outputs.root }}/backend
@@ -190,7 +190,7 @@ jobs:
             --tb=short \
             --junitxml=a227c-backend-test-results.xml
 
-      - name: Validate five-market coverage across backend
+      - name: Validate five-market coverage
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
@@ -199,23 +199,11 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          required_markets = (
-              "XAUUSD",
-              "USTECH100",
-              "GBPJPY",
-              "GBPUSD",
-              "USDJPY",
-          )
-
-          backend = Path("backend")
-
-          extensions = {
-              ".py", ".json", ".yaml", ".yml",
-              ".toml", ".md", ".txt"
-          }
+          required = ("XAUUSD", "USTECH100", "GBPJPY", "GBPUSD", "USDJPY")
+          extensions = {".py", ".json", ".yaml", ".yml", ".toml", ".md", ".txt"}
 
           files = [
-              path for path in backend.rglob("*")
+              path for path in Path("backend").rglob("*")
               if path.is_file()
               and path.suffix.lower() in extensions
               and "__pycache__" not in path.parts
@@ -224,44 +212,23 @@ jobs:
           if not files:
               raise SystemExit("Backend source files were not found.")
 
-          contents = {}
-
-          for path in files:
-              try:
-                  contents[path] = path.read_text(
-                      encoding="utf-8",
-                      errors="replace"
-                  )
-              except OSError as error:
-                  raise SystemExit(
-                      f"Unable to inspect {path}: {error}"
-                  )
+          contents = {
+              path: path.read_text(encoding="utf-8", errors="replace")
+              for path in files
+          }
 
           missing = []
-
-          for market in required_markets:
-              matches = [
-                  str(path)
-                  for path, source in contents.items()
-                  if market in source
-              ]
-
+          for market in required:
+              matches = [str(path) for path, source in contents.items() if market in source]
               if not matches:
                   missing.append(market)
-                  continue
-
-              print(f"MARKET IDENTIFIER FOUND: {market}")
-
-              for match in matches[:5]:
-                  print("  ", match)
+              else:
+                  print("MARKET IDENTIFIER FOUND:", market)
 
           if missing:
-              raise SystemExit(
-                  "Missing market identifiers: "
-                  + ", ".join(missing)
-              )
+              raise SystemExit("Missing market identifiers: " + ", ".join(missing))
 
-          print("All five market identifiers found across backend.")
+          print("All five required market identifiers were found.")
           PY
 
       - name: Validate no broker order execution calls
@@ -274,29 +241,16 @@ jobs:
           import ast
           from pathlib import Path
 
-          forbidden = {
-              "order_send",
-              "order_modify",
-              "order_delete",
-          }
-
-          runtime = Path("backend/a227c")
+          forbidden = {"order_send", "order_modify", "order_delete"}
           violations = []
 
-          for path in runtime.rglob("*.py"):
-              try:
-                  tree = ast.parse(
-                      path.read_text(encoding="utf-8"),
-                      filename=str(path)
-                  )
-              except (OSError, SyntaxError, UnicodeDecodeError):
-                  continue
-
+          for path in Path("backend/a227c").rglob("*.py"):
+              tree = ast.parse(
+                  path.read_text(encoding="utf-8"),
+                  filename=str(path),
+              )
               for node in ast.walk(tree):
-                  if not isinstance(node, ast.Call):
-                      continue
-
-                  if isinstance(node.func, ast.Attribute):
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                       if node.func.attr in forbidden:
                           violations.append(
                               f"{path}:{node.lineno}: {node.func.attr}"
@@ -304,9 +258,9 @@ jobs:
 
           if violations:
               print("\n".join(violations))
-              raise SystemExit("Broker execution call detected.")
+              raise SystemExit("Forbidden broker order-execution call detected.")
 
-          print("No forbidden broker execution calls detected.")
+          print("No forbidden broker order-execution calls detected.")
           PY
 
       - name: Validate production configuration
@@ -319,34 +273,38 @@ jobs:
 
           if [[ -f "$CONFIG" ]]; then
             python -m json.tool "$CONFIG" >/dev/null
-            echo "Production configuration JSON valid."
+            echo "Production configuration JSON is valid."
           else
-            echo "::warning::Production configuration example not present."
+            echo "::warning::Optional production configuration example was not found."
           fi
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      # FIX: Do not request the obsolete Android SDK "tools" package.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
-      - name: Install Android build tools
+      - name: Install Android API and build tools
         shell: bash
         run: |
           set -euo pipefail
 
           sdkmanager --install \
-            "platform-tools" \
             "platforms;android-${ANDROID_API_LEVEL}" \
-            "build-tools;35.0.0"
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "platform-tools"
 
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "Android SDK packages installed."
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
 
       - name: Locate Android Gradle project
         id: android
@@ -355,158 +313,156 @@ jobs:
         run: |
           set -euo pipefail
 
-          GRADLE_WRAPPER="$(find . \
-            -type f \
-            -name gradlew \
+          SETTINGS_FILE="$(find . -maxdepth 5 -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
             -not -path '*/.gradle/*' \
-            -print -quit)"
-
-          if [[ -z "$GRADLE_WRAPPER" ]]; then
-            echo "::error::Gradle wrapper not found."
-            exit 1
-          fi
-
-          GRADLE_ROOT="$(dirname "$GRADLE_WRAPPER")"
-
-          if [[ ! -f "$GRADLE_ROOT/settings.gradle" && \
-                ! -f "$GRADLE_ROOT/settings.gradle.kts" ]]; then
-            echo "::error::Gradle settings file not found."
-            exit 1
-          fi
-
-          MANIFEST="$(find "$GRADLE_ROOT" \
-            -type f \
-            -name AndroidManifest.xml \
             -not -path '*/build/*' \
             -print -quit)"
 
-          if [[ -z "$MANIFEST" ]]; then
-            echo "::error::AndroidManifest.xml not found."
+          if [[ -z "$SETTINGS_FILE" ]]; then
+            echo "::error::Gradle settings file was not found."
+            find . -maxdepth 6 -type f -print | sort | head -250
             exit 1
           fi
 
-          chmod +x "$GRADLE_WRAPPER"
+          GRADLE_ROOT="$(dirname "$SETTINGS_FILE")"
+          APP_GRADLE="$GRADLE_ROOT/android/app/build.gradle.kts"
+          APP_GRADLE_GROOVY="$GRADLE_ROOT/android/app/build.gradle"
+          APP_MANIFEST="$GRADLE_ROOT/android/app/src/main/AndroidManifest.xml"
+
+          if [[ ! -f "$APP_GRADLE" && ! -f "$APP_GRADLE_GROOVY" ]]; then
+            echo "::error::Android module build file was not found."
+            exit 1
+          fi
+
+          if [[ ! -f "$APP_MANIFEST" ]]; then
+            echo "::error::Android application manifest was not found."
+            exit 1
+          fi
 
           echo "root=$GRADLE_ROOT" >> "$GITHUB_OUTPUT"
-          echo "Android project: $GRADLE_ROOT"
+          echo "Located Gradle root: $GRADLE_ROOT"
+          echo "Android module: :android:app"
 
-      - name: Configure Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
-      - name: Verify Gradle
-        working-directory: ${{ steps.android.outputs.root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./gradlew --version
-
-      - name: Build Debug and Release APKs
-        working-directory: ${{ steps.android.outputs.root }}
+      - name: Verify production bootstrap endpoint
+        env:
+          A227C_BOOTSTRAP_URL: ${{ secrets.A227C_BOOTSTRAP_URL }}
         shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew \
+          if [[ -z "${A227C_BOOTSTRAP_URL:-}" ]]; then
+            echo "::error::Repository Actions secret A227C_BOOTSTRAP_URL is missing."
+            echo "Add the real deployed HTTPS endpoint ending in /bootstrap."
+            exit 1
+          fi
+
+          case "$A227C_BOOTSTRAP_URL" in
+            https://*) ;;
+            *)
+              echo "::error::A227C_BOOTSTRAP_URL must use HTTPS."
+              exit 1
+              ;;
+          esac
+
+          if [[ "$A227C_BOOTSTRAP_URL" != */bootstrap ]]; then
+            echo "::error::A227C_BOOTSTRAP_URL must end with /bootstrap."
+            exit 1
+          fi
+
+          echo "Production bootstrap endpoint format validated."
+
+      - name: Verify installed Gradle
+        working-directory: ${{ steps.android.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --version
+
+      - name: Build Android Debug and Release APKs
+        working-directory: ${{ steps.android.outputs.root }}
+        env:
+          A227C_BOOTSTRAP_URL: ${{ secrets.A227C_BOOTSTRAP_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle \
             --no-daemon \
             --stacktrace \
-            assembleDebug \
-            assembleRelease
+            --console=plain \
+            :android:app:assembleDebug \
+            :android:app:assembleRelease
 
-      - name: Locate and validate APKs
+      - name: Locate and validate generated APKs
         id: apk
-        working-directory: ${{ steps.project.outputs.root }}
+        working-directory: ${{ steps.android.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          GRADLE_ROOT="${{ steps.android.outputs.root }}"
+          APK_ROOT="android/app/build/outputs/apk"
 
-          DEBUG_APK="$(find "$GRADLE_ROOT" \
-            -type f \
-            -path '*/build/outputs/apk/*/debug/*.apk' \
-            -print -quit)"
+          if [[ ! -d "$APK_ROOT" ]]; then
+            echo "::error::Android APK output directory was not created."
+            exit 1
+          fi
 
-          RELEASE_APK="$(find "$GRADLE_ROOT" \
-            -type f \
-            -path '*/build/outputs/apk/*/release/*.apk' \
-            -print -quit)"
+          DEBUG_APK="$(find "$APK_ROOT" -type f -path '*/debug/*.apk' -print -quit)"
+          RELEASE_APK="$(find "$APK_ROOT" -type f -path '*/release/*.apk' -print -quit)"
 
           if [[ -z "$DEBUG_APK" ]]; then
             echo "::error::Debug APK was not generated."
+            find "$APK_ROOT" -type f -print || true
             exit 1
           fi
 
           if [[ -z "$RELEASE_APK" ]]; then
             echo "::error::Release APK was not generated."
+            find "$APK_ROOT" -type f -print || true
             exit 1
           fi
 
-          mkdir -p artifacts
+          mkdir -p "${{ steps.project.outputs.root }}/artifacts"
+          cp "$DEBUG_APK" "${{ steps.project.outputs.root }}/artifacts/A227C-DEBUG.apk"
+          cp "$RELEASE_APK" "${{ steps.project.outputs.root }}/artifacts/A227C-RELEASE.apk"
 
-          cp "$DEBUG_APK" artifacts/A227C-DEBUG.apk
-          cp "$RELEASE_APK" artifacts/A227C-RELEASE.apk
+          echo "Debug APK found: $DEBUG_APK"
+          echo "Release APK found: $RELEASE_APK"
+          ls -lh "${{ steps.project.outputs.root }}"/artifacts/*.apk
 
-          echo "debug=artifacts/A227C-DEBUG.apk" >> "$GITHUB_OUTPUT"
-          echo "release=artifacts/A227C-RELEASE.apk" >> "$GITHUB_OUTPUT"
+      - name: Verify Release APK signing status
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          ls -lh artifacts/*.apk
+          APK="artifacts/A227C-RELEASE.apk"
+          SIGNING_REPORT="artifacts/A227C-RELEASE-SIGNING-STATUS.txt"
+          APKSIGNER="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
 
-      - name: Generate APK checksums
+          if [[ -x "$APKSIGNER" ]] && "$APKSIGNER" verify "$APK" >/dev/null 2>&1; then
+            echo "Release APK signature verification: PASSED" > "$SIGNING_REPORT"
+          else
+            echo "Release APK signature verification: NOT VERIFIED" > "$SIGNING_REPORT"
+            echo "Release APK is unsigned or its signature could not be verified."
+            echo "A signed Play Store release requires a separately configured signing process."
+          fi
+
+          cat "$SIGNING_REPORT"
+
+      - name: Generate checksums and final build report
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
           cd artifacts
-
-          sha256sum \
-            A227C-DEBUG.apk \
-            A227C-RELEASE.apk \
-            > APK-SHA256SUMS.txt
-
-          cat APK-SHA256SUMS.txt
-
-      - name: Package validated source
-        working-directory: ${{ steps.project.outputs.root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p artifacts
-
-          zip -qr \
-            artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip \
-            . \
-            -x "*/__pycache__/*" \
-               "*/.pytest_cache/*" \
-               "*/.gradle/*" \
-               "*/build/*" \
-               "*/.git/*" \
-               "artifacts/*" \
-               "*.pyc" \
-               "*.pyo"
-
-          sha256sum \
-            artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip \
-            > artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.sha256
-
-          ls -lh artifacts/
-
-      - name: Generate final build report
-        working-directory: ${{ steps.project.outputs.root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p artifacts
-
-          REPORT="artifacts/A227C-FINAL-BUILD-REPORT.txt"
+          sha256sum A227C-DEBUG.apk A227C-RELEASE.apk > APK-SHA256SUMS.txt
 
           {
             echo "UNIVERSAL-TRADING-BOT-A227C"
-            echo "FINAL BUILD REPORT"
+            echo "FINAL CI BUILD REPORT"
             echo "======================================"
             echo "Repository: $GITHUB_REPOSITORY"
             echo "Branch: $GITHUB_REF_NAME"
@@ -517,26 +473,22 @@ jobs:
             echo "Runner: ubuntu-22.04"
             echo "Python: 3.11"
             echo "Java: 17"
-            echo "Gradle: 8.7"
+            echo "Gradle: 8.9"
             echo "Android API: 35"
             echo
-            echo "Backend tests: PASSED"
-            echo "Python compilation: PASSED"
-            echo "Imports: PASSED"
+            echo "Backend tests: PASSED (see JUnit report)"
+            echo "Python compilation and imports: PASSED"
             echo "Five-market identifier scan: PASSED"
-            echo "Broker execution scan: PASSED"
+            echo "No-order-execution scan: PASSED"
             echo "Debug APK: BUILT"
             echo "Release APK: BUILT"
             echo
-            echo "This CI report does not certify live MT5 connectivity,"
-            echo "Exness authentication, WSS/TLS deployment, physical"
-            echo "Android acceptance, strategy profitability, or Play"
-            echo "Protect approval."
-            echo
-            echo "END OF REPORT"
-          } > "$REPORT"
+            echo "This report does not certify live broker/provider connectivity,"
+            echo "strategy profitability, physical-device acceptance, or Play Store approval."
+          } > A227C-FINAL-BUILD-REPORT.txt
 
-          cat "$REPORT"
+          cat APK-SHA256SUMS.txt
+          cat A227C-FINAL-BUILD-REPORT.txt
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -554,14 +506,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload validated source and reports
+      - name: Upload build reports
         uses: actions/upload-artifact@v4
         with:
-          name: A227C-Validated-Source-and-Reports
+          name: A227C-Build-Reports
           path: |
-            ${{ steps.project.outputs.root }}/artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip
-            ${{ steps.project.outputs.root }}/artifacts/UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.sha256
             ${{ steps.project.outputs.root }}/artifacts/APK-SHA256SUMS.txt
+            ${{ steps.project.outputs.root }}/artifacts/A227C-RELEASE-SIGNING-STATUS.txt
             ${{ steps.project.outputs.root }}/artifacts/A227C-FINAL-BUILD-REPORT.txt
             ${{ steps.project.outputs.root }}/a227c-backend-test-results.xml
           if-no-files-found: error
