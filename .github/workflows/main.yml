@@ -139,9 +139,9 @@ jobs:
 
       - name: Validate backend imports
         working-directory: ${{ steps.project.outputs.root }}
-        shell: bash
         env:
           PYTHONPATH: ${{ steps.project.outputs.root }}/backend
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -179,9 +179,9 @@ jobs:
 
       - name: Run complete backend tests
         working-directory: ${{ steps.project.outputs.root }}
-        shell: bash
         env:
           PYTHONPATH: ${{ steps.project.outputs.root }}/backend
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -330,8 +330,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # FIX: Do not request the obsolete Android SDK "tools" package.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android build tools
         shell: bash
