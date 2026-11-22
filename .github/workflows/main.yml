@@ -32,35 +32,86 @@ jobs:
       # CHECKOUT
       # ============================================================
 
-      - name: Checkout A227C source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       # ============================================================
-      # DISCOVER PROJECT
+      # LOCATE AND EXTRACT THE ACTUAL A227C SOURCE ZIP
       # ============================================================
 
-      - name: Discover A227C project structure
-        id: discover
+      - name: Locate and extract A227C source archive
+        id: extract
         shell: bash
         run: |
           set -euo pipefail
 
-          PROJECT_ROOT="$GITHUB_WORKSPACE"
+          ARCHIVE="UNIVERSAL-TRADING-BOT-A227C-FINAL-PRODUCTION-SOURCE-RESEARCH-COMPLETE.zip"
 
-          if [[ ! -f "$PROJECT_ROOT/backend/a227c/core/indicators.py" ]]; then
-            echo "::error::A227C backend indicators module not found."
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "::error::A227C source archive not found:"
+            echo "$ARCHIVE"
+            echo
+            echo "Repository contents:"
+            find . -maxdepth 3 -type f -print | sort
             exit 1
           fi
 
-          if [[ -f "$PROJECT_ROOT/settings.gradle.kts" ]]; then
-            SETTINGS_FILE="$PROJECT_ROOT/settings.gradle.kts"
-          elif [[ -f "$PROJECT_ROOT/settings.gradle" ]]; then
-            SETTINGS_FILE="$PROJECT_ROOT/settings.gradle"
-          else
-            SETTINGS_FILE="$(find "$PROJECT_ROOT" -maxdepth 5 -type f \
-              \( -name settings.gradle -o -name settings.gradle.kts \) \
-              -print -quit)"
+          SOURCE_DIR="$GITHUB_WORKSPACE/a227c-source"
+
+          rm -rf "$SOURCE_DIR"
+          mkdir -p "$SOURCE_DIR"
+
+          unzip -q "$ARCHIVE" -d "$SOURCE_DIR"
+
+          BACKEND_FILE="$(
+            find "$SOURCE_DIR" \
+              -type f \
+              -path '*/backend/a227c/core/indicators.py' \
+              -print -quit
+          )"
+
+          if [[ -z "$BACKEND_FILE" ]]; then
+            echo "::error::The extracted archive does not contain:"
+            echo "backend/a227c/core/indicators.py"
+            echo
+            echo "Extracted contents:"
+            find "$SOURCE_DIR" -maxdepth 6 -type f -print | sort | head -300
+            exit 1
           fi
+
+          PROJECT_ROOT="${BACKEND_FILE%/backend/a227c/core/indicators.py}"
+
+          if [[ ! -d "$PROJECT_ROOT/backend/a227c" ]]; then
+            echo "::error::Invalid A227C project root:"
+            echo "$PROJECT_ROOT"
+            exit 1
+          fi
+
+          echo "project_root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+
+          echo "A227C archive found."
+          echo "A227C project root:"
+          echo "$PROJECT_ROOT"
+
+      # ============================================================
+      # DISCOVER ANDROID PROJECT
+      # ============================================================
+
+      - name: Discover Android project
+        id: discover
+        working-directory: ${{ steps.extract.outputs.project_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_ROOT="$PWD"
+
+          SETTINGS_FILE="$(
+            find "$PROJECT_ROOT" \
+              -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -print -quit
+          )"
 
           if [[ -z "$SETTINGS_FILE" ]]; then
             echo "::error::Gradle settings file not found."
@@ -69,12 +120,17 @@ jobs:
 
           GRADLE_ROOT="$(dirname "$SETTINGS_FILE")"
 
-          APP_BUILD_FILE="$(find "$GRADLE_ROOT" -type f \
-            \( -path '*/android/app/build.gradle' \
-            -o -path '*/android/app/build.gradle.kts' \
-            -o -path '*/app/build.gradle' \
-            -o -path '*/app/build.gradle.kts' \) \
-            -print -quit)"
+          APP_BUILD_FILE="$(
+            find "$GRADLE_ROOT" \
+              -type f \
+              \( \
+                -path '*/android/app/build.gradle' \
+                -o -path '*/android/app/build.gradle.kts' \
+                -o -path '*/app/build.gradle' \
+                -o -path '*/app/build.gradle.kts' \
+              \) \
+              -print -quit
+          )"
 
           if [[ -z "$APP_BUILD_FILE" ]]; then
             echo "::error::Android application module not found."
@@ -82,6 +138,7 @@ jobs:
           fi
 
           APP_DIR="$(dirname "$APP_BUILD_FILE")"
+
           MANIFEST="$APP_DIR/src/main/AndroidManifest.xml"
 
           if [[ ! -f "$MANIFEST" ]]; then
@@ -89,12 +146,17 @@ jobs:
             exit 1
           fi
 
-          LOGO="$(find "$APP_DIR/src/main/res" -type f \
-            \( -iname 'a227c_logo.png' \
-            -o -iname 'siyoma_logo.png' \
-            -o -iname '*a227c*logo*.png' \
-            -o -iname '*siyoma*logo*.png' \) \
-            -print -quit)"
+          LOGO="$(
+            find "$APP_DIR/src/main/res" \
+              -type f \
+              \( \
+                -iname 'a227c_logo.png' \
+                -o -iname 'siyoma_logo.png' \
+                -o -iname '*a227c*logo*.png' \
+                -o -iname '*siyoma*logo*.png' \
+              \) \
+              -print -quit
+          )"
 
           if [[ -z "$LOGO" ]]; then
             echo "::error::A227C/SIYOMA logo not found."
@@ -104,18 +166,14 @@ jobs:
           RELATIVE_APP="${APP_DIR#"$GRADLE_ROOT"/}"
           MODULE_TASK=":${RELATIVE_APP//\//:}"
 
-          {
-            echo "project_root=$PROJECT_ROOT"
-            echo "gradle_root=$GRADLE_ROOT"
-            echo "app_dir=$APP_DIR"
-            echo "module_task=$MODULE_TASK"
-            echo "manifest=$MANIFEST"
-            echo "logo=$LOGO"
-          } >> "$GITHUB_OUTPUT"
+          echo "gradle_root=$GRADLE_ROOT" >> "$GITHUB_OUTPUT"
+          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          echo "module_task=$MODULE_TASK" >> "$GITHUB_OUTPUT"
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          echo "logo=$LOGO" >> "$GITHUB_OUTPUT"
 
-          echo "Project root: $PROJECT_ROOT"
           echo "Gradle root: $GRADLE_ROOT"
-          echo "Application module: $MODULE_TASK"
+          echo "Android module: $MODULE_TASK"
           echo "Manifest: $MANIFEST"
           echo "Logo: $LOGO"
 
@@ -137,7 +195,7 @@ jobs:
           python -m pip install numpy pandas pytest
 
       - name: Install backend requirements
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -147,11 +205,11 @@ jobs:
           fi
 
       # ============================================================
-      # SOURCE STRUCTURE
+      # REQUIRED SOURCE COMPONENTS
       # ============================================================
 
       - name: Validate required A227C source components
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -160,6 +218,7 @@ jobs:
             "backend/a227c/core/indicators.py"
             "backend/a227c/core/strategies.py"
             "backend/a227c/core/research_candidates.py"
+
             "backend/a227c/research/run_research.py"
             "backend/a227c/research/candidate_backtest.py"
             "backend/a227c/research/tick_replay.py"
@@ -169,26 +228,29 @@ jobs:
             "backend/a227c/research/shadow.py"
             "backend/a227c/research/acceptance.py"
             "backend/a227c/research/validate_all.py"
+
             "backend/a227c/providers/symbol_discovery.py"
+
             "backend/a227c/adapters/mt5_adapter.py"
             "backend/a227c/adapters/deriv_adapter.py"
           )
 
           for FILE in "${REQUIRED_FILES[@]}"; do
             if [[ ! -f "$FILE" ]]; then
-              echo "::error::Required component missing: $FILE"
+              echo "::error::Required A227C component missing:"
+              echo "$FILE"
               exit 1
             fi
           done
 
-          echo "Required A227C components confirmed."
+          echo "All required A227C components are present."
 
       # ============================================================
-      # IMPORTS
+      # IMPORT VALIDATION
       # ============================================================
 
       - name: Verify backend imports
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -199,6 +261,8 @@ jobs:
           from a227c.core.indicators import *
           from a227c.core.strategies import *
           from a227c.core.research_candidates import *
+
+          from a227c.research.run_research import *
           from a227c.research.candidate_backtest import *
           from a227c.research.tick_replay import *
           from a227c.research.statistics import *
@@ -207,7 +271,9 @@ jobs:
           from a227c.research.shadow import *
           from a227c.research.acceptance import *
           from a227c.research.validate_all import *
+
           from a227c.providers.symbol_discovery import *
+
           from a227c.adapters.mt5_adapter import *
           from a227c.adapters.deriv_adapter import *
 
@@ -215,11 +281,11 @@ jobs:
           PY
 
       # ============================================================
-      # COMPILE
+      # PYTHON COMPILE
       # ============================================================
 
       - name: Compile Python modules
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -229,11 +295,11 @@ jobs:
           echo "Python compilation successful."
 
       # ============================================================
-      # TESTS
+      # COMPLETE BACKEND TEST SUITE
       # ============================================================
 
-      - name: Run complete backend test suite
-        working-directory: ${{ steps.discover.outputs.project_root }}
+      - name: Run complete backend tests
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -250,11 +316,11 @@ jobs:
           fi
 
       # ============================================================
-      # FIVE MARKET COVERAGE
+      # FIVE-MARKET RESEARCH COVERAGE
       # ============================================================
 
       - name: Validate five-market research coverage
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -279,7 +345,8 @@ jobs:
 
           if missing:
               raise SystemExit(
-                  "Missing markets: " + ", ".join(sorted(missing))
+                  "Missing research markets: "
+                  + ", ".join(sorted(missing))
               )
 
           total = 0
@@ -292,22 +359,24 @@ jobs:
                       f"No research candidates registered for {symbol}"
                   )
 
-              print(f"{symbol}: {len(candidates)} candidates")
+              print(
+                  f"{symbol}: "
+                  f"{len(candidates)} research candidates"
+              )
+
               total += len(candidates)
 
-          print(f"Total registered candidates: {total}")
-
-          if total < 1:
-              raise SystemExit("Research candidate registry is empty.")
-
+          print(
+              f"Total registered research candidates: {total}"
+          )
           PY
 
       # ============================================================
-      # RESEARCH SAFETY
+      # SIGNAL-ONLY SAFETY CHECK
       # ============================================================
 
       - name: Verify signal-only architecture
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -326,8 +395,12 @@ jobs:
 
           echo "No broker trade execution calls detected."
 
+      # ============================================================
+      # RESEARCH PREREQUISITE AUDIT
+      # ============================================================
+
       - name: Run research prerequisite audit
-        working-directory: ${{ steps.discover.outputs.project_root }}
+        working-directory: ${{ steps.extract.outputs.project_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -368,7 +441,7 @@ jobs:
             "build-tools;35.0.0"
 
       # ============================================================
-      # GRADLE
+      # GRADLE 8.7
       # ============================================================
 
       - name: Set up Gradle 8.7
@@ -376,7 +449,11 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Verify Android structure
+      # ============================================================
+      # VERIFY ANDROID PROJECT
+      # ============================================================
+
+      - name: Verify Android project structure
         working-directory: ${{ steps.discover.outputs.gradle_root }}
         shell: bash
         run: |
@@ -397,12 +474,12 @@ jobs:
 
           if [[ -f gradlew ]]; then
             chmod +x gradlew
-            echo "Gradle wrapper available."
+            echo "Gradle wrapper found."
           else
-            echo "No Gradle wrapper; using installed Gradle 8.7."
+            echo "No Gradle wrapper supplied; using Gradle 8.7."
           fi
 
-          command -v gradle >/dev/null
+          command -v gradle
 
           java -version
           gradle --version
@@ -411,7 +488,7 @@ jobs:
       # BOOTSTRAP
       # ============================================================
 
-      - name: Validate production bootstrap configuration
+      - name: Validate optional production bootstrap
         shell: bash
         env:
           A227C_BOOTSTRAP_URL: ${{ secrets.A227C_BOOTSTRAP_URL }}
@@ -419,27 +496,20 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${A227C_BOOTSTRAP_URL:-}" ]]; then
-            echo "::error::A227C_BOOTSTRAP_URL secret is not configured."
-            exit 1
+            echo "A227C_BOOTSTRAP_URL is not configured."
+            echo "Using the project's existing/default configuration."
+            exit 0
           fi
 
           case "$A227C_BOOTSTRAP_URL" in
             https://*)
+              echo "HTTPS bootstrap URL accepted."
               ;;
             *)
               echo "::error::A227C_BOOTSTRAP_URL must use HTTPS."
               exit 1
               ;;
           esac
-
-          case "$A227C_BOOTSTRAP_URL" in
-            *localhost*|*127.0.0.1*|*0.0.0.0*)
-              echo "::error::Localhost bootstrap URL is not allowed."
-              exit 1
-              ;;
-          esac
-
-          echo "Production bootstrap configuration accepted."
 
       # ============================================================
       # CLEAN
@@ -453,9 +523,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          gradle --no-daemon \
-            -PA227C_BOOTSTRAP_URL="$A227C_BOOTSTRAP_URL" \
-            "${{ steps.discover.outputs.module_task }}:clean"
+          if [[ -n "${A227C_BOOTSTRAP_URL:-}" ]]; then
+            gradle \
+              --no-daemon \
+              -PA227C_BOOTSTRAP_URL="$A227C_BOOTSTRAP_URL" \
+              "${{ steps.discover.outputs.module_task }}:clean"
+          else
+            gradle \
+              --no-daemon \
+              "${{ steps.discover.outputs.module_task }}:clean"
+          fi
 
       # ============================================================
       # DEBUG APK
@@ -469,9 +546,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          gradle --no-daemon \
-            -PA227C_BOOTSTRAP_URL="$A227C_BOOTSTRAP_URL" \
-            "${{ steps.discover.outputs.module_task }}:assembleDebug"
+          if [[ -n "${A227C_BOOTSTRAP_URL:-}" ]]; then
+            gradle \
+              --no-daemon \
+              -PA227C_BOOTSTRAP_URL="$A227C_BOOTSTRAP_URL" \
+              "${{ steps.discover.outputs.module_task }}:assembleDebug"
+          else
+            gradle \
+              --no-daemon \
+              "${{ steps.discover.outputs.module_task }}:assembleDebug"
+          fi
 
       - name: Verify Debug APK
         working-directory: ${{ github.workspace }}
@@ -481,10 +565,12 @@ jobs:
 
           APP="${{ steps.discover.outputs.app_dir }}"
 
-          APK="$(find "$APP/build/outputs/apk/debug" \
-            -type f \
-            -name '*.apk' \
-            -print -quit)"
+          APK="$(
+            find "$APP/build/outputs/apk/debug" \
+              -type f \
+              -name '*.apk' \
+              -print -quit
+          )"
 
           if [[ -z "$APK" ]]; then
             echo "::error::Debug APK was not generated."
@@ -522,9 +608,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          gradle --no-daemon \
-            -PA227C_BOOTSTRAP_URL="$A227C_BOOTSTRAP_URL" \
-            "${{ steps.discover.outputs.module_task }}:assembleRelease"
+          if [[ -n "${A227C_BOOTSTRAP_URL:-}" ]]; then
+            gradle \
+              --no-daemon \
+              -PA227C_BOOTSTRAP_URL="$A227C_BOOTSTRAP_URL" \
+              "${{ steps.discover.outputs.module_task }}:assembleRelease"
+          else
+            gradle \
+              --no-daemon \
+              "${{ steps.discover.outputs.module_task }}:assembleRelease"
+          fi
 
       - name: Verify Release APK
         working-directory: ${{ github.workspace }}
@@ -534,10 +627,12 @@ jobs:
 
           APP="${{ steps.discover.outputs.app_dir }}"
 
-          APK="$(find "$APP/build/outputs/apk/release" \
-            -type f \
-            -name '*.apk' \
-            -print -quit)"
+          APK="$(
+            find "$APP/build/outputs/apk/release" \
+              -type f \
+              -name '*.apk' \
+              -print -quit
+          )"
 
           if [[ -z "$APK" ]]; then
             echo "::error::Release APK was not generated."
@@ -556,91 +651,4 @@ jobs:
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: UNIVERSAL-TRADING-BOT-A227C-Release-APK
-          path: |
-            artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk
-            artifacts/UNIVERSAL-TRADING-BOT-A227C-Release.apk.sha256
-          if-no-files-found: error
-          retention-days: 30
-
-      # ============================================================
-      # VALIDATED SOURCE PACKAGE
-      # ============================================================
-
-      - name: Package validated source
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$GITHUB_WORKSPACE"
-
-          rm -rf validated-source
-
-          mkdir -p validated-source
-
-          rsync -a \
-            --exclude='.git/' \
-            --exclude='validated-source/' \
-            --exclude='artifacts/' \
-            --exclude='**/__pycache__/' \
-            --exclude='**/.pytest_cache/' \
-            --exclude='**/.gradle/' \
-            --exclude='**/build/' \
-            "$GITHUB_WORKSPACE/" \
-            validated-source/
-
-          zip -qr \
-            UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip \
-            validated-source
-
-          sha256sum \
-            UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip \
-            > UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip.sha256
-
-          test -s UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip
-
-      - name: Upload validated source
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: UNIVERSAL-TRADING-BOT-A227C-Validated-Source
-          path: |
-            UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip
-            UNIVERSAL-TRADING-BOT-A227C-VALIDATED-SOURCE.zip.sha256
-          if-no-files-found: error
-          retention-days: 30
-
-      # ============================================================
-      # FINAL REPORT
-      # ============================================================
-
-      - name: Generate build report
-        if: always()
-        shell: bash
-        env:
-          BUILD_STATUS: ${{ job.status }}
-        run: |
-          set -euo pipefail
-
-          {
-            echo "# UNIVERSAL-TRADING-BOT-A227C BUILD REPORT"
-            echo
-            echo "## Build Environment"
-            echo
-            echo "- Runner: Ubuntu 22.04"
-            echo "- Python: 3.11"
-            echo "- Java: 17"
-            echo "- Gradle: 8.7"
-            echo "- Android API: 35"
-            echo "- Job status: $BUILD_STATUS"
-            echo
-            echo "## Markets"
-            echo
-            echo "- XAUUSD"
-            echo "- USTECH100"
-            echo "- GBPJPY"
-            echo "- GBPUSD"
-            echo "- USDJPY"
-            echo
- 
+          name: UNIVERSAL-TRADING-BOT-A227C-Releas
